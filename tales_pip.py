@@ -1350,29 +1350,41 @@ def send_input(events):
     return user32.SendInput(len(events), array, ctypes.sizeof(INPUT))
 
 
-def key_stroke(vk, mods=0):
-    """One press and release, modifiers held around it.
-
-    Both the virtual key and its scan code go out: a game that reads the
+def key_event(code, up):
+    """Both the virtual key and its scan code go out: a game that reads the
     keyboard below the window messages usually looks at the scan code."""
+    flags = KEYEVENTF_SCANCODE | (KEYEVENTF_KEYUP if up else 0)
+    if code in EXTENDED_VKS:
+        flags |= KEYEVENTF_EXTENDEDKEY
+    item = INPUT(type=INPUT_KEYBOARD)
+    item.ki = KEYBDINPUT(code, user32.MapVirtualKeyW(code, MAPVK_VK_TO_VSC),
+                          flags, 0, None)
+    return item
+
+
+def key_phases(vk, mods=0):
+    """A keystroke split into the steps a hand would make: modifiers down,
+    the key, modifiers up.
+
+    Sent all at once they arrive in the same batch, and a game that reads its
+    input once a frame can see the key pressed and released without ever
+    seeing the modifier held - which is how Shift+M arrived as a bare M."""
     holders = [code for bit, code in ((MOD_CONTROL, 0x11), (MOD_SHIFT, 0x10),
                                        (MOD_ALT, 0x12), (MOD_WIN, 0x5B))
                 if mods & bit]
-    events = []
+    phases = []
+    if holders:
+        phases.append([key_event(code, False) for code in holders])
+    phases.append([key_event(vk, False)])
+    phases.append([key_event(vk, True)])
+    if holders:
+        phases.append([key_event(code, True) for code in reversed(holders)])
+    return phases
 
-    def stroke(code, up):
-        flags = KEYEVENTF_SCANCODE | (KEYEVENTF_KEYUP if up else 0)
-        if code in EXTENDED_VKS:
-            flags |= KEYEVENTF_EXTENDEDKEY
-        item = INPUT(type=INPUT_KEYBOARD)
-        item.ki = KEYBDINPUT(code, user32.MapVirtualKeyW(code, MAPVK_VK_TO_VSC),
-                              flags, 0, None)
-        return item
 
-    events += [stroke(code, False) for code in holders]
-    events += [stroke(vk, False), stroke(vk, True)]
-    events += [stroke(code, True) for code in reversed(holders)]
-    return events
+def key_stroke(vk, mods=0):
+    """Every step at once, for anything that does not need them spaced out."""
+    return [event for phase in key_phases(vk, mods) for event in phase]
 
 
 def side_click(which):
@@ -3799,10 +3811,21 @@ class RadialMenuController(QObject):
             self.centre, (point.x, point.y),
             int(self.options().get("dead_zone", 34))))
 
+    PHASE_MS = 20
+
     def _choose(self, direction):
         bound = (self.options().get("keys") or {}).get(direction)
-        if bound:
-            send_input(key_stroke(bound["vk"], bound.get("mods", 0)))
+        if not bound:
+            return
+        self._play(key_phases(bound["vk"], bound.get("mods", 0)))
+
+    def _play(self, phases, index=0):
+        """One step at a time, far enough apart that a game reading its input
+        once a frame sees each of them."""
+        if index >= len(phases):
+            return
+        send_input(phases[index])
+        QTimer.singleShot(self.PHASE_MS, lambda: self._play(phases, index + 1))
 
     def _cancel(self):
         self.hold.stop()

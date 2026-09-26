@@ -8,6 +8,7 @@ so this answers that before anything is built on top of it.
     python tools/send_key_test.py f1         # a function key
     python tools/send_key_test.py shift+m    # with modifiers
     python tools/send_key_test.py xbutton1   # the side button instead
+    python tools/send_key_test.py shift+m --together   # all at once, to compare
 
 It counts down, brings the game to the front, sends the key once, and stops.
 Watch the game: if it reacts the same way it does to the real key, made-up
@@ -67,8 +68,14 @@ def key_events(vk, mods=0):
     holders = [code for bit, code in ((0x0002, 0x11), (0x0004, 0x10),
                                        (0x0001, 0x12), (0x0008, 0x5B))
                 if mods & bit]
-    return ([one(c, False) for c in holders] + [one(vk, False), one(vk, True)]
-            + [one(c, True) for c in reversed(holders)])
+    phases = []
+    if holders:
+        phases.append([one(c, False) for c in holders])
+    phases.append([one(vk, False)])
+    phases.append([one(vk, True)])
+    if holders:
+        phases.append([one(c, True) for c in reversed(holders)])
+    return phases
 
 
 def side_events(which):
@@ -109,7 +116,7 @@ def main():
             mods |= {"ctrl": 0x0002, "control": 0x0002, "shift": 0x0004,
                       "alt": 0x0001, "win": 0x0008}.get(name, 0)
     if what in ("xbutton1", "xbutton2"):
-        events = side_events(1 if what == "xbutton1" else 2)
+        events = [side_events(1 if what == "xbutton1" else 2)]
     elif what in NAMED:
         events = key_events(NAMED[what], mods)
     elif len(what) == 1:
@@ -125,8 +132,15 @@ def main():
         time.sleep(1)
     user32.SetForegroundWindow(hwnd)
     time.sleep(0.3)
-    sent = send(events)
-    print(f"sent {sent} of {len(events)} events. Did the game react?")
+    if "--together" in sys.argv:
+        flat = [event for phase in events for event in phase]
+        print(f"sent {send(flat)} events in one go. Did the game react?")
+        return
+    total = 0
+    for phase in events:
+        total += send(phase)
+        time.sleep(0.02)
+    print(f"sent {total} events, spaced out. Did the game react?")
 
 
 if __name__ == "__main__":
