@@ -1150,6 +1150,15 @@ QPushButton#Primary { background: #4c7dff; border: none; color: #ffffff; font-we
 QPushButton#Primary:hover { background: #5d8aff; }
 QPushButton#Danger { background: #2a1e22; border-color: #5a2a35; color: #ff8fa3; }
 QPushButton#Danger:hover { background: #3a252c; }
+/* The section rail reads as navigation, so its buttons lose the raised look. */
+QPushButton#Section {
+    background: transparent; border: none; border-radius: 8px;
+    padding: 9px 12px; text-align: left; color: #98a1b4;
+}
+QPushButton#Section:hover { background: #1e222b; color: #d6dbe7; }
+QPushButton#Section:checked {
+    background: #2f4a8f; color: #ffffff; font-weight: 600;
+}
 QListWidget {
     background: #1a1d23; border: 1px solid #2a2f3a; border-radius: 8px;
     padding: 4px; outline: none;
@@ -1190,7 +1199,6 @@ QScrollBar::handle:vertical:pressed { background: #6f778a; }
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
 QScrollBar::add-line, QScrollBar::sub-line { height: 0; width: 0; }
 """
-QSS = QSS.replace("#3d4椒a", "#3d434f")
 
 
 ICON_JELLY_HI = QColor(150, 196, 255)
@@ -2202,11 +2210,14 @@ class SettingsDialog(QDialog):
         self.preview_timer.timeout.connect(self.update_preview)
         self.setWindowTitle("TalesHelper")
         self.setStyleSheet(QSS)
-        self.resize(910, 780)
+        self.resize(1060, 800)
 
-        root = QHBoxLayout(self)
+        root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
+        body = QHBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(0)
 
         left = QWidget()
         left.setObjectName("Root")
@@ -2214,17 +2225,17 @@ class SettingsDialog(QDialog):
         left_layout.setContentsMargins(18, 18, 12, 18)
         left_layout.setSpacing(12)
 
-        title = QLabel(f"TalesHelper <span style='font-size:12px; color:#7d8698;'>"
-                        f"v{APP_VERSION}</span>")
-        title.setObjectName("Title")
-        left_layout.addWidget(title)
+        mouse_page = QWidget()
+        mouse_page.setObjectName("Root")
+        mouse_layout = QVBoxLayout(mouse_page)
+        mouse_layout.setContentsMargins(18, 18, 18, 18)
+        mouse_layout.setSpacing(12)
 
-        self.lbl_update = QLabel("")
-        self.lbl_update.setObjectName("UpdateBadge")
-        self.lbl_update.setWordWrap(True)
-        self.lbl_update.setOpenExternalLinks(True)
-        self.lbl_update.hide()
-        left_layout.addWidget(self.lbl_update)
+        general_page = QWidget()
+        general_page.setObjectName("Root")
+        general_layout = QVBoxLayout(general_page)
+        general_layout.setContentsMargins(18, 18, 18, 18)
+        general_layout.setSpacing(12)
 
         target_card, target_layout = make_card("대상 프로그램")
         self.lbl_status = QLabel("-")
@@ -2352,7 +2363,7 @@ class SettingsDialog(QDialog):
         global_layout.addLayout(hover_row)
         global_layout.addLayout(refresh_row)
 
-        left_layout.addWidget(global_card)
+        general_layout.addWidget(global_card)
 
         radial_card, radial_layout = make_card("사이드 버튼 메뉴")
         hint_radial = QLabel("마우스 사이드 버튼을 누르고 있으면 커서 둘레에 키 고리가 "
@@ -2422,7 +2433,7 @@ class SettingsDialog(QDialog):
         hint_keys.setObjectName("Caption")
         hint_keys.setWordWrap(True)
         radial_layout.addWidget(hint_keys)
-        left_layout.addWidget(radial_card)
+        mouse_layout.addWidget(radial_card)
 
         hotkey_card, hotkey_layout = make_card("단축키")
         self.hotkey_edit = HotkeyEdit()
@@ -2445,7 +2456,37 @@ class SettingsDialog(QDialog):
         self.lbl_preset_state = QLabel("")
         self.lbl_preset_state.setObjectName("Caption")
         hotkey_layout.addWidget(self.lbl_preset_state)
-        left_layout.addWidget(hotkey_card)
+        general_layout.addWidget(hotkey_card)
+
+        # A rail of sections rather than one long column: the PIP settings
+        # alone filled it, and what has been added since has nothing to do
+        # with them.
+        rail = QWidget()
+        rail.setObjectName("SidePanel")
+        rail.setFixedWidth(148)
+        rail_layout = QVBoxLayout(rail)
+        rail_layout.setContentsMargins(14, 18, 14, 18)
+        rail_layout.setSpacing(6)
+
+        title = QLabel(f"TalesHelper <span style='font-size:12px; color:#7d8698;'>"
+                        f"v{APP_VERSION}</span>")
+        title.setObjectName("Title")
+        title.setWordWrap(True)
+        rail_layout.addWidget(title)
+
+        self.lbl_update = QLabel("")
+        self.lbl_update.setObjectName("UpdateBadge")
+        self.lbl_update.setWordWrap(True)
+        self.lbl_update.setOpenExternalLinks(True)
+        self.lbl_update.hide()
+        rail_layout.addWidget(self.lbl_update)
+        rail_layout.addSpacing(8)
+
+        pip_page = QWidget()
+        self.pip_page = pip_page
+        pip_layout = QHBoxLayout(pip_page)
+        pip_layout.setContentsMargins(0, 0, 0, 0)
+        pip_layout.setSpacing(0)
 
         # Scrollable so shrinking the window never makes a control unreachable.
         left_scroll = QScrollArea()
@@ -2455,7 +2496,7 @@ class SettingsDialog(QDialog):
         left_scroll.setFixedWidth(392)
         left_scroll.setFrameShape(QFrame.Shape.NoFrame)
         left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        root.addWidget(left_scroll)
+        pip_layout.addWidget(left_scroll)
 
         right = QWidget()
         right.setObjectName("SidePanel")
@@ -2490,22 +2531,65 @@ class SettingsDialog(QDialog):
             lambda *_: self.update_preview())
         self.stack.addWidget(self.detail_scroll)
         right_layout.addWidget(self.stack, 1)
+        pip_layout.addWidget(right, 1)
 
-        bottom = QHBoxLayout()
+        mouse_layout.addStretch()
+        general_layout.addStretch()
+        self.pages = QStackedWidget()
+        self.section_buttons = []
+        for name, page in (("PIP", pip_page),
+                            ("마우스", self._scrolled(mouse_page)),
+                            ("일반", self._scrolled(general_page))):
+            index = self.pages.count()
+            self.pages.addWidget(page)
+            button = QPushButton(name)
+            button.setObjectName("Section")
+            button.setCheckable(True)
+            button.setAutoExclusive(True)
+            button.setAutoDefault(False)
+            button.clicked.connect(lambda _=False, i=index: self._show_section(i))
+            rail_layout.addWidget(button)
+            self.section_buttons.append(button)
+        self.section_buttons[0].setChecked(True)
+        rail_layout.addStretch()
+
+        body.addWidget(rail)
+        body.addWidget(self.pages, 1)
+        root.addLayout(body, 1)
+
+        footer = QWidget()
+        footer.setObjectName("SidePanel")
+        bottom = QHBoxLayout(footer)
+        bottom.setContentsMargins(18, 10, 18, 10)
         self.lbl_path = QLabel(CONFIG_PATH)
         self.lbl_path.setObjectName("Caption")
         btn_close = QPushButton("닫기")
         btn_close.clicked.connect(self.accept)
         bottom.addWidget(self.lbl_path, 1)
         bottom.addWidget(btn_close)
-        right_layout.addLayout(bottom)
+        root.addWidget(footer)
 
-        root.addWidget(right, 1)
         # Otherwise Enter in a text field triggers the first button (프로그램 지정).
         for button in self.findChildren(QPushButton):
             button.setAutoDefault(False)
             button.setDefault(False)
         self.refresh()
+
+    def _scrolled(self, page):
+        area = QScrollArea()
+        area.setObjectName("Root")
+        area.setWidget(page)
+        area.setWidgetResizable(True)
+        area.setFrameShape(QFrame.Shape.NoFrame)
+        area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        return area
+
+    def _show_section(self, index):
+        self.pages.setCurrentIndex(index)
+        # The PIP preview is a DWM thumbnail sitting at fixed window
+        # coordinates, so it has to go away when its page is not the one
+        # being looked at.
+        self.update_preview()
 
     def _build_detail(self):
         page = QWidget()
@@ -2760,7 +2844,8 @@ class SettingsDialog(QDialog):
             region = self._selected_region()
             target = self.controller.target_hwnd
             if (not self.isVisible() or region is None or not target
-                    or not user32.IsWindow(target)):
+                    or not user32.IsWindow(target)
+                    or self.pages.currentWidget() is not self.pip_page):
                 self._release_preview()
                 if region is not None and not target:
                     self.lbl_preview.setText("게임이 실행 중이 아닙니다.")
