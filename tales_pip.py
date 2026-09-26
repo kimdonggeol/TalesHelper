@@ -1,6 +1,7 @@
 import sys
 import os
 import math
+import subprocess
 import threading
 import time
 import traceback
@@ -188,6 +189,12 @@ HOTKEY_IDS = {"toggle_hotkey": HOTKEY_ID, "profile_hotkey": HOTKEY_ID_PROFILE}
 VK_F1 = 0x70
 DEFAULT_TOGGLE_HOTKEY = {"mods": MOD_CONTROL, "vk": 0x7B, "text": "Ctrl+F12"}
 DEFAULT_PROFILE_HOTKEY = {"mods": MOD_CONTROL, "vk": 0x7A, "text": "Ctrl+F11"}
+# Hold a mouse side button to bring up a ring of keys around the cursor.
+# The game runs as administrator, and Windows will not let a program of lower
+# privilege take a button away from it or send it a key, so this only works
+# when TalesPIP is elevated too.
+DEFAULT_RADIAL = {"enabled": False, "button": 1, "hold_ms": 200,
+                   "radius": 130, "dead_zone": 34, "keys": {}}
 # A profile is a set of PIPs inside one preset — typically one per character,
 # since two characters at the same resolution want different regions shown.
 DEFAULT_PROFILE = {"id": "default", "name": "프로필 1"}
@@ -223,6 +230,7 @@ DEFAULT_CONFIG = {
     "check_updates": True,
     "pip_coords": "relative",
     "auto_hide": copy.deepcopy(DEFAULT_AUTO_HIDE),
+    "radial": copy.deepcopy(DEFAULT_RADIAL),
     "regions": [],
 }
 DEFAULT_REGION_OPTS = {"opacity": 100, "click_through": False, "preset": 1,
@@ -362,12 +370,18 @@ def hotkey_text(mods, key):
     return "+".join(parts)
 
 
-def normalize_hotkey(value):
-    """Accepts the stored dict and returns a valid one, or None when disabled."""
+def normalize_hotkey(value, require_mods=True):
+    """Accepts the stored dict and returns a valid one, or None when disabled.
+
+    A shortcut registered with Windows has to carry a modifier or it would
+    swallow a bare keypress everywhere; one the radial menu merely sends to
+    the game does not, so that caller asks for the looser rule."""
     if not isinstance(value, dict):
         return None
     mods, vk, text = value.get("mods"), value.get("vk"), value.get("text")
-    if not isinstance(mods, int) or not isinstance(vk, int) or not mods or not vk:
+    if not isinstance(mods, int) or not isinstance(vk, int) or not vk:
+        return None
+    if require_mods and not mods:
         return None
     return {"mods": mods, "vk": vk,
             "text": text if isinstance(text, str) and text else "단축키"}
@@ -620,6 +634,59 @@ RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 APP_NAME = "TalesPIP"
 
 
+def is_elevated():
+    """True when this process is running as administrator.
+
+    The game runs elevated, and Windows will not let a program of lower
+    privilege put input into one of higher privilege, so anything that sends
+    keys or swallows mouse buttons meant for the game needs this."""
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+TASK_NAME = "TalesPIP Autostart"
+CREATE_NO_WINDOW = 0x08000000
+
+
+def _schtasks(*args):
+    """schtasks with no console window flashing up."""
+    try:
+        done = subprocess.run(("schtasks",) + args, capture_output=True,
+                               creationflags=CREATE_NO_WINDOW, timeout=15)
+        return done.returncode == 0, done.stdout.decode("utf-8", "replace")
+    except Exception:
+        log_exception(dialog=False)
+        return False, ""
+
+
+def is_task_startup_enabled():
+    ok, _ = _schtasks("/query", "/tn", TASK_NAME)
+    return ok
+
+
+def set_task_startup(enabled):
+    """A logon task that runs with the highest privileges.
+
+    The ordinary Run key cannot start a program as administrator - Windows
+    refuses, or the prompt appears and the program never starts - so this is
+    the way to have it there already elevated at logon, without a prompt.
+    Creating the task itself needs administrator rights."""
+    if not enabled:
+        ok, _ = _schtasks("/delete", "/tn", TASK_NAME, "/f")
+        return ok or not is_task_startup_enabled()
+    if getattr(sys, "frozen", False):
+        command = f'"{sys.executable}"'
+    else:
+        pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+        launcher = pythonw if os.path.exists(pythonw) else sys.executable
+        command = f'"{launcher}" "{os.path.abspath(__file__)}"'
+    ok, _ = _schtasks("/create", "/tn", TASK_NAME, "/tr", command,
+                       "/sc", "onlogon", "/rl", "highest", "/f")
+    return ok
+
+
 def startup_command():
     """Command Windows should run at logon — the exe when frozen, otherwise
     pythonw (no console window) plus this script."""
@@ -786,6 +853,26 @@ def merge_builtin_triggers(auto):
 BUILTIN_POSITIONS = load_builtin_positions()
 
 
+def normalize_radial(raw):
+    out = copy.deepcopy(DEFAULT_RADIAL)
+    if not isinstance(raw, dict):
+        return out
+    out["enabled"] = bool(raw.get("enabled", False))
+    if raw.get("button") in (1, 2):
+        out["button"] = raw["button"]
+    for key, low, high in (("hold_ms", 60, 2000), ("radius", 60, 400),
+                            ("dead_zone", 10, 120)):
+        value = raw.get(key)
+        if isinstance(value, int) and low <= value <= high:
+            out[key] = value
+    for name, hotkey in (raw.get("keys") or {}).items():
+        if name in RADIAL_LABELS:
+            bound = normalize_hotkey(hotkey, require_mods=False)
+            if bound:
+                out["keys"][name] = bound
+    return out
+
+
 def normalize_auto_hide(raw):
     auto = copy.deepcopy(DEFAULT_AUTO_HIDE)
     if not isinstance(raw, dict):
@@ -923,6 +1010,7 @@ def load_config():
     config["active_preset"] = active if isinstance(active, int) and 1 <= active <= PRESET_COUNT else 1
 
     config["auto_hide"] = normalize_auto_hide(config.get("auto_hide"))
+    config["radial"] = normalize_radial(config.get("radial"))
     config["toggle_hotkey"] = normalize_hotkey(config.get("toggle_hotkey"))
     config["profile_hotkey"] = normalize_hotkey(config.get("profile_hotkey"))
     # Always-on-top is not user-configurable; a PIP that can hide behind the
@@ -1205,6 +1293,244 @@ class Hud(QWidget):
         user32.SetWindowPos(wintypes.HWND(int(self.winId())), wintypes.HWND(-1),
                              0, 0, 0, 0,
                              SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+
+
+WH_MOUSE_LL = 14
+WM_XBUTTONDOWN, WM_XBUTTONUP = 0x020B, 0x020C
+LLMHF_INJECTED = 0x00000001
+INPUT_MOUSE, INPUT_KEYBOARD = 0, 1
+KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, KEYEVENTF_EXTENDEDKEY = 0x0002, 0x0008, 0x0001
+MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP = 0x0080, 0x0100
+MAPVK_VK_TO_VSC = 0
+EXTENDED_VKS = {0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2D, 0x2E, 0x2C}
+# The eight sectors, in the order the angle from the centre lands in them.
+RADIAL_ORDER = ("e", "ne", "n", "nw", "w", "sw", "s", "se")
+RADIAL_LAYOUT = (("nw", "n", "ne"), ("w", "center", "e"), ("sw", "s", "se"))
+RADIAL_LABELS = {"n": "위", "ne": "오른쪽 위", "e": "오른쪽", "se": "오른쪽 아래",
+                  "s": "아래", "sw": "왼쪽 아래", "w": "왼쪽", "nw": "왼쪽 위",
+                  "center": "가운데"}
+
+
+class MSLLHOOKSTRUCT(ctypes.Structure):
+    _fields_ = [("pt", wintypes.POINT), ("mouseData", wintypes.DWORD),
+                ("flags", wintypes.DWORD), ("time", wintypes.DWORD),
+                ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong))]
+
+
+class MOUSEINPUT(ctypes.Structure):
+    _fields_ = [("dx", wintypes.LONG), ("dy", wintypes.LONG),
+                ("mouseData", wintypes.DWORD), ("dwFlags", wintypes.DWORD),
+                ("time", wintypes.DWORD),
+                ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong))]
+
+
+class KEYBDINPUT(ctypes.Structure):
+    _fields_ = [("wVk", wintypes.WORD), ("wScan", wintypes.WORD),
+                ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD),
+                ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong))]
+
+
+class INPUT(ctypes.Structure):
+    class _U(ctypes.Union):
+        _fields_ = [("mi", MOUSEINPUT), ("ki", KEYBDINPUT)]
+    _anonymous_ = ("u",)
+    _fields_ = [("type", wintypes.DWORD), ("u", _U)]
+
+
+def send_input(events):
+    if not events:
+        return 0
+    array = (INPUT * len(events))(*events)
+    return user32.SendInput(len(events), array, ctypes.sizeof(INPUT))
+
+
+def key_stroke(vk, mods=0):
+    """One press and release, modifiers held around it.
+
+    Both the virtual key and its scan code go out: a game that reads the
+    keyboard below the window messages usually looks at the scan code."""
+    holders = [code for bit, code in ((MOD_CONTROL, 0x11), (MOD_SHIFT, 0x10),
+                                       (MOD_ALT, 0x12), (MOD_WIN, 0x5B))
+                if mods & bit]
+    events = []
+
+    def stroke(code, up):
+        flags = KEYEVENTF_SCANCODE | (KEYEVENTF_KEYUP if up else 0)
+        if code in EXTENDED_VKS:
+            flags |= KEYEVENTF_EXTENDEDKEY
+        item = INPUT(type=INPUT_KEYBOARD)
+        item.ki = KEYBDINPUT(code, user32.MapVirtualKeyW(code, MAPVK_VK_TO_VSC),
+                              flags, 0, None)
+        return item
+
+    events += [stroke(code, False) for code in holders]
+    events += [stroke(vk, False), stroke(vk, True)]
+    events += [stroke(code, True) for code in reversed(holders)]
+    return events
+
+
+def side_click(which):
+    """The side button press we swallowed, put back as it was."""
+    down = INPUT(type=INPUT_MOUSE)
+    down.mi = MOUSEINPUT(0, 0, which, MOUSEEVENTF_XDOWN, 0, None)
+    up = INPUT(type=INPUT_MOUSE)
+    up.mi = MOUSEINPUT(0, 0, which, MOUSEEVENTF_XUP, 0, None)
+    return [down, up]
+
+
+def direction_at(centre, point, dead_zone):
+    """Which sector the cursor is in, measured from where the button went down."""
+    dx, dy = point[0] - centre[0], point[1] - centre[1]
+    if dx * dx + dy * dy < dead_zone * dead_zone:
+        return "center"
+    angle = math.degrees(math.atan2(-dy, dx))
+    return RADIAL_ORDER[round(angle / 45.0) % 8]
+
+
+class SideButtonHook:
+    """Watches the mouse side buttons across the whole desktop.
+
+    A low-level hook is the only way to stop a button reaching the game, and
+    the only way to see one at all while the game has the focus. Windows
+    delivers it on the thread that installed it, so this runs on the same
+    thread as everything else and may touch the interface directly - as long
+    as it returns quickly, or Windows quietly takes the hook away."""
+
+    def __init__(self, on_press, on_release):
+        self.on_press = on_press
+        self.on_release = on_release
+        self._handle = None
+        self._proc = ctypes.WINFUNCTYPE(
+            ctypes.c_longlong, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)(self._hook)
+
+    def start(self):
+        if self._handle:
+            return True
+        user32.SetWindowsHookExW.restype = wintypes.HHOOK
+        user32.SetWindowsHookExW.argtypes = [ctypes.c_int, ctypes.c_void_p,
+                                              wintypes.HINSTANCE, wintypes.DWORD]
+        user32.CallNextHookEx.restype = ctypes.c_longlong
+        user32.CallNextHookEx.argtypes = [wintypes.HHOOK, ctypes.c_int,
+                                           wintypes.WPARAM, wintypes.LPARAM]
+        self._handle = user32.SetWindowsHookExW(WH_MOUSE_LL, self._proc, None, 0)
+        return bool(self._handle)
+
+    def stop(self):
+        if self._handle:
+            user32.UnhookWindowsHookEx(self._handle)
+        self._handle = None
+
+    def _hook(self, code, wparam, lparam):
+        try:
+            if code >= 0 and wparam in (WM_XBUTTONDOWN, WM_XBUTTONUP):
+                info = ctypes.cast(lparam, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
+                # Our own replayed click comes back through here; let it by.
+                if not info.flags & LLMHF_INJECTED:
+                    which = (info.mouseData >> 16) & 0xFFFF
+                    at = (info.pt.x, info.pt.y)
+                    handler = (self.on_press if wparam == WM_XBUTTONDOWN
+                                else self.on_release)
+                    if handler(which, at):
+                        return 1          # swallowed: the game never sees it
+        except Exception:
+            log_exception(dialog=False)
+        return user32.CallNextHookEx(self._handle, code, wparam, lparam)
+
+
+class RadialMenu(Hud):
+    """Eight sectors around where the button went down, and a centre that
+    cancels. Input-transparent: the cursor is read rather than captured, so
+    the game never loses the focus while it is up."""
+
+    def __init__(self):
+        super().__init__()
+        self.radius = 130
+        self.dead_zone = 30
+        self.labels = {}
+        self.active = "center"
+        self._place = None
+
+    def show_at(self, centre, radius, dead_zone, labels):
+        self.radius, self.dead_zone, self.labels = radius, dead_zone, labels
+        self.active = "center"
+        self._place = (centre, radius * 2 + 80)
+        self.show()
+        self._put_there()
+        # show() makes Qt re-apply its own idea of the geometry in logical
+        # units; say it again afterwards, in real pixels.
+        QTimer.singleShot(0, self._put_there)
+        self.update()
+
+    def _put_there(self):
+        if not self._place:
+            return
+        centre, side = self._place
+        user32.SetWindowPos(wintypes.HWND(int(self.winId())), None,
+                             centre[0] - side // 2, centre[1] - side // 2,
+                             side, side, SWP_NOZORDER | SWP_NOACTIVATE)
+        self.bump()
+
+    def set_active(self, direction):
+        if direction != self.active:
+            self.active = direction
+            self.update()
+
+    def paintEvent(self, e):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        side = min(self.width(), self.height())
+        scale = side / float(self.radius * 2 + 80) if self.radius else 1.0
+        radius = self.radius * scale
+        dead = self.dead_zone * scale
+        centre = QPoint(self.width() // 2, self.height() // 2)
+        box = QRect(int(centre.x() - radius), int(centre.y() - radius),
+                     int(radius * 2), int(radius * 2))
+
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(18, 20, 25, 205))
+        painter.drawEllipse(box)
+        for index, name in enumerate(RADIAL_ORDER):
+            start = int((index * 45 - 22.5) * 16)
+            if name == self.active:
+                painter.setBrush(QColor(76, 125, 255, 190))
+            elif self.labels.get(name):
+                painter.setBrush(QColor(46, 52, 66, 150))
+            else:
+                painter.setBrush(QColor(30, 34, 42, 110))
+            painter.drawPie(box, start, 45 * 16)
+        painter.setPen(QPen(QColor(255, 255, 255, 40), 1))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        for index in range(8):
+            angle = math.radians(index * 45 + 22.5)
+            painter.drawLine(centre,
+                              QPoint(int(centre.x() + math.cos(angle) * radius),
+                                     int(centre.y() - math.sin(angle) * radius)))
+        painter.drawEllipse(box)
+
+        font = painter.font()
+        font.setBold(True)
+        font.setPointSize(font.pointSize() + 1)
+        painter.setFont(font)
+        for index, name in enumerate(RADIAL_ORDER):
+            angle = math.radians(index * 45)
+            at = QPoint(int(centre.x() + math.cos(angle) * radius * 0.66),
+                         int(centre.y() - math.sin(angle) * radius * 0.66))
+            text = self.labels.get(name) or "-"
+            painter.setPen(QColor(245, 248, 255) if self.labels.get(name)
+                            else QColor(130, 138, 152))
+            painter.drawText(QRect(at.x() - 46, at.y() - 12, 92, 24),
+                              Qt.AlignmentFlag.AlignCenter, text)
+
+        inner = QRect(int(centre.x() - dead), int(centre.y() - dead),
+                       int(dead * 2), int(dead * 2))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(76, 125, 255, 190) if self.active == "center"
+                          else QColor(12, 14, 18, 225))
+        painter.drawEllipse(inner)
+        painter.setPen(QColor(245, 248, 255) if self.active == "center"
+                        else QColor(150, 158, 172))
+        painter.drawText(inner, Qt.AlignmentFlag.AlignCenter,
+                          self.labels.get("center") or "취소")
 
 
 class SelectionFrame(Hud):
@@ -1741,8 +2067,12 @@ class HotkeyEdit(QPushButton):
 
     captured = pyqtSignal(object)
 
-    def __init__(self):
+    def __init__(self, require_mods=True, empty_text="단축키 없음"):
         super().__init__()
+        # A global shortcut has to be a combination or it would swallow a bare
+        # keypress everywhere; one that only goes to the game does not.
+        self.require_mods = require_mods
+        self.empty_text = empty_text
         self.value = None
         self._capturing = False
         self.setAutoDefault(False)
@@ -1753,11 +2083,11 @@ class HotkeyEdit(QPushButton):
         self._refresh_text()
 
     def _refresh_text(self):
-        self.setText(self.value["text"] if self.value else "단축키 없음")
+        self.setText(self.value["text"] if self.value else self.empty_text)
 
     def _begin(self):
         self._capturing = True
-        self.setText("조합을 누르세요…  (Esc 취소)")
+        self.setText("키를 누르세요…  (Del 비움, Esc 취소)")
         self.grabKeyboard()
 
     def _end(self):
@@ -1775,9 +2105,13 @@ class HotkeyEdit(QPushButton):
             self._end()
             self._refresh_text()
             return
+        if key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            self._end()
+            self.captured.emit(None)
+            return
         mods = qt_modifiers_to_mods(e.modifiers())
         vk = qt_key_to_vk(key)
-        if not mods:
+        if self.require_mods and not mods:
             self.setText("Ctrl / Alt / Shift 와 함께 눌러주세요")
             return
         if vk is None:
@@ -1922,6 +2256,8 @@ class SettingsDialog(QDialog):
         self.chk_active.toggled.connect(self._commit_only_when_active)
         self.chk_startup = QCheckBox("윈도우 시작 시 자동 실행")
         self.chk_startup.toggled.connect(self._commit_startup)
+        self.chk_task_startup = QCheckBox("관리자 권한으로 자동 실행")
+        self.chk_task_startup.toggled.connect(self._commit_task_startup)
         self.chk_updates = QCheckBox("시작할 때 업데이트 확인")
         self.chk_updates.toggled.connect(self._commit_check_updates)
         self.chk_notify = QCheckBox("트레이 알림 표시")
@@ -1947,6 +2283,7 @@ class SettingsDialog(QDialog):
         global_layout.addWidget(self.chk_follow)
         global_layout.addWidget(self.chk_active)
         global_layout.addWidget(self.chk_startup)
+        global_layout.addWidget(self.chk_task_startup)
         global_layout.addWidget(self.chk_updates)
         global_layout.addWidget(self.chk_notify)
         global_layout.addWidget(self.chk_hover)
@@ -1954,6 +2291,63 @@ class SettingsDialog(QDialog):
         global_layout.addLayout(refresh_row)
 
         left_layout.addWidget(global_card)
+
+        radial_card, radial_layout = make_card("사이드 버튼 메뉴")
+        hint_radial = QLabel("마우스 사이드 버튼을 누르고 있으면 커서 둘레에 키 고리가 "
+                              "나타납니다. 방향으로 밀고 버튼을 떼면 그 키가 게임에 "
+                              "전달되고, 짧게 누르면 원래 동작 그대로입니다.")
+        hint_radial.setObjectName("Caption")
+        hint_radial.setWordWrap(True)
+        radial_layout.addWidget(hint_radial)
+
+        self.chk_radial = QCheckBox("사이드 버튼 메뉴 사용")
+        self.chk_radial.toggled.connect(self._commit_radial_enabled)
+        radial_layout.addWidget(self.chk_radial)
+
+        self.lbl_radial_admin = QLabel("")
+        self.lbl_radial_admin.setObjectName("Caption")
+        self.lbl_radial_admin.setWordWrap(True)
+        radial_layout.addWidget(self.lbl_radial_admin)
+
+        button_row = QHBoxLayout()
+        self.combo_radial_button = QComboBox()
+        self.combo_radial_button.addItem("사이드 버튼 1 (뒤로)", 1)
+        self.combo_radial_button.addItem("사이드 버튼 2 (앞으로)", 2)
+        self.combo_radial_button.currentIndexChanged.connect(self._commit_radial_button)
+        button_row.addWidget(QLabel("사용할 버튼"))
+        button_row.addWidget(self.combo_radial_button, 1)
+        radial_layout.addLayout(button_row)
+
+        hold_row = QHBoxLayout()
+        self.spin_radial_hold = self._make_spin(60, 2000, self._commit_radial_hold)
+        self.spin_radial_hold.setSingleStep(20)
+        self.spin_radial_hold.setSuffix(" ms")
+        hold_row.addWidget(QLabel("메뉴가 뜨기까지"))
+        hold_row.addWidget(self.spin_radial_hold)
+        hold_row.addStretch()
+        radial_layout.addLayout(hold_row)
+
+        self.radial_keys = {}
+        key_grid = QGridLayout()
+        key_grid.setHorizontalSpacing(6)
+        key_grid.setVerticalSpacing(6)
+        for row, names in enumerate(RADIAL_LAYOUT):
+            for column, name in enumerate(names):
+                editor = HotkeyEdit(require_mods=False,
+                                     empty_text="취소" if name == "center" else "-")
+                editor.setToolTip(RADIAL_LABELS[name])
+                editor.captured.connect(
+                    lambda key, n=name: self._commit_radial_key(n, key))
+                self.radial_keys[name] = editor
+                key_grid.addWidget(editor, row, column)
+        radial_layout.addLayout(key_grid)
+
+        hint_keys = QLabel("칸을 누른 뒤 보낼 키를 누르세요. Del 로 비우고, "
+                            "가운데는 비워두면 취소가 됩니다.")
+        hint_keys.setObjectName("Caption")
+        hint_keys.setWordWrap(True)
+        radial_layout.addWidget(hint_keys)
+        left_layout.addWidget(radial_card)
 
         hotkey_card, hotkey_layout = make_card("단축키")
         self.hotkey_edit = HotkeyEdit()
@@ -2173,6 +2567,7 @@ class SettingsDialog(QDialog):
             self.chk_active.setChecked(bool(self.controller.config.get("only_when_active", True)))
             # The registry is the source of truth, not config.json.
             self.chk_startup.setChecked(is_startup_enabled())
+            self.chk_task_startup.setChecked(is_task_startup_enabled())
             self.chk_updates.setChecked(bool(self.controller.config.get("check_updates", True)))
             self.chk_notify.setChecked(bool(self.controller.config.get("notifications", True)))
             self.chk_hover.setChecked(bool(self.controller.config.get("dim_on_hover", True)))
@@ -2197,6 +2592,7 @@ class SettingsDialog(QDialog):
         if self.controller.latest_version:
             self.show_update(self.controller.latest_version)
         self._load_preset_fields()
+        self._load_radial()
         self._reload_profile_combo()
         self.update_preset_state()
         self.reload_region_list()
@@ -2575,6 +2971,93 @@ class SettingsDialog(QDialog):
             self._load_preset_fields()
             self._reload_profile_combo()
             self.reload_region_list()
+
+    def _radial_options(self):
+        return self.controller.config.setdefault("radial", copy.deepcopy(DEFAULT_RADIAL))
+
+    def _load_radial(self):
+        options = self._radial_options()
+        elevated = is_elevated()
+        self._loading += 1
+        try:
+            self.chk_radial.setChecked(bool(options.get("enabled")))
+            self.chk_radial.setEnabled(elevated)
+            index = self.combo_radial_button.findData(options.get("button", 1))
+            self.combo_radial_button.setCurrentIndex(max(0, index))
+            self.spin_radial_hold.setValue(int(options.get("hold_ms", 200)))
+            for name, editor in self.radial_keys.items():
+                editor.set_value((options.get("keys") or {}).get(name))
+        finally:
+            self._loading -= 1
+        live = elevated and options.get("enabled")
+        for widget in ([self.combo_radial_button, self.spin_radial_hold]
+                        + list(self.radial_keys.values())):
+            widget.setEnabled(bool(live))
+        if not elevated:
+            self.lbl_radial_admin.setText(
+                "게임이 관리자 권한으로 실행되기 때문에, 이 기능을 쓰려면 "
+                "TalesPIP도 관리자로 실행해야 합니다. 아래 전체 설정의 "
+                "`관리자 권한으로 자동 실행` 을 켜두면 다음 로그온부터 그렇게 뜹니다.")
+        elif not options.get("enabled"):
+            self.lbl_radial_admin.setText("꺼져 있습니다.")
+        else:
+            self.lbl_radial_admin.setText(
+                f"{TARGET_LABEL} 창을 쓰는 동안에만 버튼을 가져옵니다. "
+                "다른 프로그램에서는 원래대로 동작합니다.")
+
+    def _commit_radial_enabled(self, checked):
+        if self._loading:
+            return
+        self._radial_options()["enabled"] = bool(checked)
+        save_config(self.controller.config)
+        self.controller.radial.apply()
+        self._load_radial()
+
+    def _commit_radial_button(self, _index):
+        if self._loading:
+            return
+        self._radial_options()["button"] = self.combo_radial_button.currentData()
+        save_config(self.controller.config)
+
+    def _commit_radial_hold(self, value):
+        if self._loading:
+            return
+        self._radial_options()["hold_ms"] = int(value)
+        save_config(self.controller.config)
+
+    def _commit_radial_key(self, name, hotkey):
+        if self._loading:
+            return
+        keys = self._radial_options().setdefault("keys", {})
+        bound = normalize_hotkey(hotkey, require_mods=False)
+        if bound:
+            keys[name] = bound
+        else:
+            keys.pop(name, None)
+        save_config(self.controller.config)
+        self.radial_keys[name].set_value(keys.get(name))
+
+    def _commit_task_startup(self, checked):
+        if self._loading:
+            return
+        if checked and not is_elevated():
+            QMessageBox.information(
+                self, "안내",
+                "이 항목을 켜려면 TalesPIP를 관리자 권한으로 실행해야 합니다.\n"
+                "작업을 만드는 것 자체에 관리자 권한이 필요합니다.")
+            self._loading += 1
+            self.chk_task_startup.setChecked(False)
+            self._loading -= 1
+            return
+        if not set_task_startup(checked):
+            QMessageBox.warning(self, "안내", "작업 스케줄러 항목을 바꾸지 못했습니다.")
+        self._loading += 1
+        self.chk_task_startup.setChecked(is_task_startup_enabled())
+        self._loading -= 1
+        if checked:
+            # Two ways in would start it twice.
+            set_startup_enabled(False)
+            self.chk_startup.setChecked(False)
 
     def _hotkey_editor(self, key):
         return (self.profile_hotkey_edit if key == "profile_hotkey"
@@ -3169,6 +3652,126 @@ class TriggerWatcher(QObject):
         self.controller.on_auto_hide_changed(matched, self.reason)
 
 
+class RadialMenuController(QObject):
+    """Hold a side button to pick a key from a ring; click it and nothing
+    changes.
+
+    The button is taken away from the game the moment it goes down, because a
+    low-level hook has to decide there and then and cannot hand it back later.
+    A short press therefore puts the click back afterwards, which is why this
+    needs the same privilege as the game: Windows will not let a lesser
+    program either swallow its input or send it any."""
+
+    TRACK_MS = 25
+
+    def __init__(self, controller):
+        super().__init__()
+        self.controller = controller
+        self.menu = None
+        self.centre = None
+        self.button = None
+        self.showing = False
+        self.hook = SideButtonHook(self._pressed, self._released)
+        self.hold = QTimer(self)
+        self.hold.setSingleShot(True)
+        self.hold.timeout.connect(self._open)
+        self.track = QTimer(self)
+        self.track.setInterval(self.TRACK_MS)
+        self.track.timeout.connect(self._track)
+
+    def options(self):
+        return self.controller.config.get("radial") or {}
+
+    def available(self):
+        """Elevated, or none of this can work at all."""
+        return is_elevated()
+
+    def wanted(self):
+        return bool(self.options().get("enabled")) and self.available()
+
+    def apply(self):
+        """Put the hook in place, or take it away, to match the settings."""
+        if self.wanted():
+            self.hook.start()
+        else:
+            self._cancel()
+            self.hook.stop()
+
+    def stop(self):
+        self._cancel()
+        self.hook.stop()
+
+    def _game_has_focus(self):
+        """Only take the button while the game is the window being used.
+        Elsewhere it is somebody's Back button and none of our business."""
+        hwnd = self.controller.target_hwnd
+        front = user32.GetForegroundWindow()
+        return bool(hwnd and front and pid_of_window(front) == pid_of_window(hwnd))
+
+    def _pressed(self, which, at):
+        if not self.wanted() or which != self.options().get("button", 1):
+            return False
+        if not self._game_has_focus():
+            return False
+        self.centre = at
+        self.button = which
+        self.showing = False
+        self.hold.start(int(self.options().get("hold_ms", 200)))
+        return True
+
+    def _released(self, which, at):
+        if self.centre is None or which != self.button:
+            return False
+        centre, button = self.centre, self.button
+        showing = self.showing
+        self._cancel()
+        if showing:
+            self._choose(direction_at(centre, at,
+                                       int(self.options().get("dead_zone", 34))))
+        else:
+            # Too quick for the menu, so it was an ordinary click. Put it back,
+            # but not from inside the hook: the replay passes through here too.
+            QTimer.singleShot(0, lambda: send_input(side_click(button)))
+        return True
+
+    def _open(self):
+        if self.centre is None:
+            return
+        if self.menu is None:
+            self.menu = RadialMenu()
+        options = self.options()
+        labels = {name: (key or {}).get("text")
+                   for name, key in (options.get("keys") or {}).items()}
+        self.menu.show_at(self.centre, int(options.get("radius", 130)),
+                           int(options.get("dead_zone", 34)), labels)
+        self.showing = True
+        self.track.start()
+        self._track()
+
+    def _track(self):
+        if not self.showing or self.centre is None:
+            return
+        point = wintypes.POINT()
+        user32.GetCursorPos(ctypes.byref(point))
+        self.menu.set_active(direction_at(
+            self.centre, (point.x, point.y),
+            int(self.options().get("dead_zone", 34))))
+
+    def _choose(self, direction):
+        bound = (self.options().get("keys") or {}).get(direction)
+        if bound:
+            send_input(key_stroke(bound["vk"], bound.get("mods", 0)))
+
+    def _cancel(self):
+        self.hold.stop()
+        self.track.stop()
+        self.showing = False
+        self.centre = None
+        self.button = None
+        if self.menu is not None:
+            self.menu.hide()
+
+
 class PipController(QObject):
     def __init__(self):
         super().__init__()
@@ -3187,8 +3790,10 @@ class PipController(QObject):
         self.pips_hidden = False
         self.auto_hidden = False
         self.watcher = TriggerWatcher(self)
+        self.radial = RadialMenuController(self)
         # Nothing should still be grabbing the screen while Qt tears itself down.
         QApplication.instance().aboutToQuit.connect(self.watcher.stop)
+        QApplication.instance().aboutToQuit.connect(self.radial.stop)
         self._hotkey_hwnd = None
         self._hotkey_holder = None
         self._registered_hotkeys = set()
@@ -3281,6 +3886,7 @@ class PipController(QObject):
         # Only surface the window on genuine first run; otherwise stay in the tray.
         if not QSystemTrayIcon.isSystemTrayAvailable() or first_run:
             QTimer.singleShot(0, self.open_settings)
+        self.radial.apply()
         QTimer.singleShot(0, self.check_process)
         QTimer.singleShot(2500, self.check_for_updates)
         self.update_tray_tooltip()
