@@ -866,10 +866,16 @@ def normalize_radial(raw):
         if isinstance(value, int) and low <= value <= high:
             out[key] = value
     for name, hotkey in (raw.get("keys") or {}).items():
-        if name in RADIAL_LABELS:
-            bound = normalize_hotkey(hotkey, require_mods=False)
-            if bound:
-                out["keys"][name] = bound
+        if name not in RADIAL_LABELS:
+            continue
+        bound = normalize_hotkey(hotkey, require_mods=False)
+        if not bound:
+            continue
+        # What to call it in the ring, when the key itself is not the point.
+        label = (hotkey or {}).get("label")
+        if isinstance(label, str) and label.strip():
+            bound["label"] = label.strip()[:12]
+        out["keys"][name] = bound
     return out
 
 
@@ -2328,22 +2334,35 @@ class SettingsDialog(QDialog):
         radial_layout.addLayout(hold_row)
 
         self.radial_keys = {}
+        self.radial_names = {}
         key_grid = QGridLayout()
         key_grid.setHorizontalSpacing(6)
-        key_grid.setVerticalSpacing(6)
+        key_grid.setVerticalSpacing(10)
         for row, names in enumerate(RADIAL_LAYOUT):
             for column, name in enumerate(names):
+                cell = QVBoxLayout()
+                cell.setSpacing(2)
                 editor = HotkeyEdit(require_mods=False,
                                      empty_text="취소" if name == "center" else "-")
-                editor.setToolTip(RADIAL_LABELS[name])
+                editor.setToolTip(RADIAL_LABELS[name] + " — 보낼 키")
                 editor.captured.connect(
                     lambda key, n=name: self._commit_radial_key(n, key))
+                title = QLineEdit()
+                title.setPlaceholderText("이름")
+                title.setMaxLength(12)
+                title.setToolTip(RADIAL_LABELS[name] + " — 메뉴에 보일 이름")
+                title.editingFinished.connect(
+                    lambda n=name: self._commit_radial_label(n))
                 self.radial_keys[name] = editor
-                key_grid.addWidget(editor, row, column)
+                self.radial_names[name] = title
+                cell.addWidget(editor)
+                cell.addWidget(title)
+                key_grid.addLayout(cell, row, column)
         radial_layout.addLayout(key_grid)
 
-        hint_keys = QLabel("칸을 누른 뒤 보낼 키를 누르세요. Del 로 비우고, "
-                            "가운데는 비워두면 취소가 됩니다.")
+        hint_keys = QLabel("위에는 보낼 키를, 아래에는 메뉴에 보일 이름을 적습니다. "
+                            "이름을 비우면 키가 그대로 보입니다. "
+                            "Ctrl / Shift / Alt 조합도 됩니다. Del 로 키를 비웁니다.")
         hint_keys.setObjectName("Caption")
         hint_keys.setWordWrap(True)
         radial_layout.addWidget(hint_keys)
@@ -2986,12 +3005,15 @@ class SettingsDialog(QDialog):
             self.combo_radial_button.setCurrentIndex(max(0, index))
             self.spin_radial_hold.setValue(int(options.get("hold_ms", 200)))
             for name, editor in self.radial_keys.items():
-                editor.set_value((options.get("keys") or {}).get(name))
+                bound = (options.get("keys") or {}).get(name)
+                editor.set_value(bound)
+                self.radial_names[name].setText((bound or {}).get("label", ""))
         finally:
             self._loading -= 1
         live = elevated and options.get("enabled")
         for widget in ([self.combo_radial_button, self.spin_radial_hold]
-                        + list(self.radial_keys.values())):
+                        + list(self.radial_keys.values())
+                        + list(self.radial_names.values())):
             widget.setEnabled(bool(live))
         if not elevated:
             self.lbl_radial_admin.setText(
@@ -3036,6 +3058,22 @@ class SettingsDialog(QDialog):
             keys.pop(name, None)
         save_config(self.controller.config)
         self.radial_keys[name].set_value(keys.get(name))
+        self.radial_names[name].setText((keys.get(name) or {}).get("label", ""))
+
+    def _commit_radial_label(self, name):
+        if self._loading:
+            return
+        keys = self._radial_options().setdefault("keys", {})
+        bound = keys.get(name)
+        if not bound:
+            self.radial_names[name].setText("")
+            return
+        title = self.radial_names[name].text().strip()[:12]
+        if title:
+            bound["label"] = title
+        else:
+            bound.pop("label", None)
+        save_config(self.controller.config)
 
     def _commit_task_startup(self, checked):
         if self._loading:
@@ -3740,7 +3778,7 @@ class RadialMenuController(QObject):
         if self.menu is None:
             self.menu = RadialMenu()
         options = self.options()
-        labels = {name: (key or {}).get("text")
+        labels = {name: (key or {}).get("label") or (key or {}).get("text")
                    for name, key in (options.get("keys") or {}).items()}
         self.menu.show_at(self.centre, int(options.get("radius", 130)),
                            int(options.get("dead_zone", 34)), labels)
