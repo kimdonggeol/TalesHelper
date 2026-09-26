@@ -20,7 +20,7 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 POSITIONS = os.path.join(ROOT, "assets", "triggers", "positions.json")
-DEFAULT_MARGIN = 32     # matches NEAR_MARGIN in tales_pip.py
+DEFAULT_MARGIN = 32     # matches NEAR_MARGIN in tales_helper.py
 SLACK = 48              # room beyond the wandering actually seen
 WANDER_LIMIT = 250      # past this it was dragged, not wandering
 

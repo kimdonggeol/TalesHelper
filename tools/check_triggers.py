@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import QApplication  # noqa: E402
 
 _app = QApplication(sys.argv)
 
-import tales_pip as m  # noqa: E402
+import tales_helper as m  # noqa: E402
 
 
 def main():

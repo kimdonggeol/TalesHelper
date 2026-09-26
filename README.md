@@ -1,8 +1,9 @@
-# TalesPIP
+# TalesHelper
 
-테일즈위버 화면의 특정 영역을 잘라내 항상 위에 띄우는 PIP(Picture-in-Picture) 도구입니다.
+테일즈위버를 편하게 해주는 보조 도구입니다.
 
-게임 창에 가려 보이지 않는 정보(체력바, 채팅, 미니맵 등)를 원하는 위치에 따로 띄워두고 사용합니다.
+화면의 특정 영역을 잘라 항상 위에 띄우고(PIP), 게임 화면을 읽어 가려야 할 때는
+알아서 비켜주며, 마우스 버튼 하나로 키 메뉴를 불러올 수 있습니다.
 
 ## 주요 기능
 
@@ -41,7 +42,7 @@ Windows가 대상 창의 렌더링 결과를 직접 합성해주므로:
 
 ## 설치
 
-[Releases](https://github.com/kimdonggeol/TalesPIP/releases)에서 `TalesPIP.exe`를 받아
+[Releases](https://github.com/kimdonggeol/TalesHelper/releases)에서 `TalesHelper.exe`를 받아
 원하는 폴더에 두고 실행하세요. 설치 과정은 없습니다.
 
 설정이 exe 옆의 `config.json`에 저장되므로 쓰기 가능한 폴더에 두세요.
@@ -50,7 +51,7 @@ Windows가 대상 창의 렌더링 결과를 직접 합성해주므로:
 
 ```bash
 pip install -r requirements.txt
-python tales_pip.py
+python tales_helper.py
 ```
 
 화면 감지에만 `numpy` 와 `opencv-python` 이 쓰입니다.
@@ -131,7 +132,7 @@ PIP를 **우클릭**하면 영역 추가·수정·삭제와 마우스 통과를 
 
 ### 7. 화면을 보고 알아서 숨기기
 
-TalesPIP는 게임 화면을 주기적으로 읽어 PIP를 띄워도 되는 상황인지 판단합니다.
+TalesHelper는 게임 화면을 주기적으로 읽어 PIP를 띄워도 되는 상황인지 판단합니다.
 설정할 것은 없습니다. 알아서 동작합니다.
 
 **캐릭터가 접속하기 전에는 PIP가 뜨지 않습니다.**
@@ -168,8 +169,8 @@ TalesPIP는 게임 화면을 주기적으로 읽어 PIP를 띄워도 되는 상�
 게임이 관리자 권한으로 실행되기 때문입니다. 윈도우는 낮은 권한 프로그램이
 높은 권한 창에서 버튼을 가로채거나 키를 보내는 것을 막습니다.
 
-`관리자로 실행.bat` 을 더블클릭하면 됩니다. `TalesPIP.exe` 와 같은 폴더에
-두세요. 소스로 쓰는 경우에는 옆의 `tales_pip.py` 를 먼저 띄우므로, 고친 내용이
+`관리자로 실행.bat` 을 더블클릭하면 됩니다. `TalesHelper.exe` 와 같은 폴더에
+두세요. 소스로 쓰는 경우에는 옆의 `tales_helper.py` 를 먼저 띄우므로, 고친 내용이
 바로 반영됩니다. 매번 그렇게 쓰고 싶다면 전체 설정의 `관리자 권한으로 자동 실행` 을
 켜세요. 로그온할 때 UAC 창 없이 관리자로 뜨게 됩니다.
 
@@ -216,13 +217,13 @@ TalesPIP는 게임 화면을 주기적으로 읽어 PIP를 띄워도 되는 상�
 
 ```bash
 pip install pyinstaller
-pyinstaller --noconfirm --onefile --windowed --name TalesPIP --icon assets/TalesPIP.ico --add-data "assets/triggers;assets/triggers" tales_pip.py
+pyinstaller --noconfirm --onefile --windowed --name TalesHelper --icon assets/TalesHelper.ico --add-data "assets/triggers;assets/triggers" tales_helper.py
 ```
 
 `--add-data` 는 기본 제공 자동 숨김 조건을 실행 파일에 넣습니다.
 조건을 추가하려면 [assets/triggers](assets/triggers) 를 보세요.
 
-`dist/TalesPIP.exe`가 생성됩니다.
+`dist/TalesHelper.exe`가 생성됩니다.
 
 ## 라이선스
 

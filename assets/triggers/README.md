@@ -34,7 +34,7 @@ python tools/add_builtin.py 오픈마켓.png --mode hide --anchor c
 게임에서 직접 잘라내고 싶다면
 
 1. 게임에서 해당 화면을 띄웁니다
-2. TalesPIP 설정 창 → `자동 숨김 (화면 감지)` → `화면에서 추가` 로 그래픽을 드래그합니다
+2. TalesHelper 설정 창 → `자동 숨김 (화면 감지)` → `화면에서 추가` 로 그래픽을 드래그합니다
 3. `python tools/export_triggers.py` 를 실행하면 `hide/` 로 저장됩니다
 4. `show/` 조건은 파일을 그 폴더로 옮기면 됩니다
 

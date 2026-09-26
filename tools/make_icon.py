@@ -1,4 +1,4 @@
-"""Writes assets/TalesPIP.ico from the icon drawn in tales_pip.py.
+"""Writes assets/TalesHelper.ico from the icon drawn in tales_helper.py.
 
 Run after changing icon_pixmap() so the exe icon stays in sync:
     python tools/make_icon.py
@@ -17,11 +17,11 @@ from PyQt6.QtWidgets import QApplication
 # afterwards keeps that order.
 _app = QApplication(sys.argv)
 
-import tales_pip  # noqa: E402
+import tales_helper  # noqa: E402
 
 SIZES = (16, 24, 32, 48, 64, 128, 256)
 OUT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                    "assets", "TalesPIP.ico")
+                    "assets", "TalesHelper.ico")
 
 
 def png_bytes(size):
@@ -29,7 +29,7 @@ def png_bytes(size):
     store = QByteArray()
     buffer = QBuffer(store)
     buffer.open(QBuffer.OpenModeFlag.WriteOnly)
-    tales_pip.icon_pixmap(size).save(buffer, "PNG")
+    tales_helper.icon_pixmap(size).save(buffer, "PNG")
     buffer.close()
     return bytes(store)
 

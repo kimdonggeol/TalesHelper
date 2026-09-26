@@ -23,7 +23,7 @@ import numpy as np
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT_DIR = os.path.join(ROOT, "assets", "triggers")
 ANCHORS = ("all", "tl", "t", "tr", "l", "c", "r", "bl", "b", "br")
-MIN_DETAIL = 6.0        # matches MIN_TRIGGER_DETAIL in tales_pip.py
+MIN_DETAIL = 6.0        # matches MIN_TRIGGER_DETAIL in tales_helper.py
 MIN_SCALE_SIDE = 48     # below this a sweep runs at full resolution
 
 

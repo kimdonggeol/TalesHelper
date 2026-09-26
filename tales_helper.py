@@ -114,7 +114,7 @@ def log_exception(msg=None, dialog=True):
     if dialog and not _dialog_shown:
         _dialog_shown = True
         try:
-            ctypes.windll.user32.MessageBoxW(0, msg[-1500:], "TalesPIP 오류", 0x10)
+            ctypes.windll.user32.MessageBoxW(0, msg[-1500:], "TalesHelper 오류", 0x10)
         except Exception:
             pass
 
@@ -158,8 +158,8 @@ TARGET_PROCESS = "InphaseNXD.exe"
 TARGET_LABEL = "테일즈위버"  # shown in the UI instead of the process name
 
 APP_VERSION = "1.1.1"
-REPO_URL = "https://github.com/kimdonggeol/TalesPIP"
-LATEST_RELEASE_API = "https://api.github.com/repos/kimdonggeol/TalesPIP/releases/latest"
+REPO_URL = "https://github.com/kimdonggeol/TalesHelper"
+LATEST_RELEASE_API = "https://api.github.com/repos/kimdonggeol/TalesHelper/releases/latest"
 RELEASES_URL = REPO_URL + "/releases/latest"
 DIALOG_CLASS = "#32770"  # standard Win32 dialog (patcher, message boxes)
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
@@ -192,7 +192,7 @@ DEFAULT_PROFILE_HOTKEY = {"mods": MOD_CONTROL, "vk": 0x7A, "text": "Ctrl+F11"}
 # Hold a mouse side button to bring up a ring of keys around the cursor.
 # The game runs as administrator, and Windows will not let a program of lower
 # privilege take a button away from it or send it a key, so this only works
-# when TalesPIP is elevated too.
+# when TalesHelper is elevated too.
 DEFAULT_RADIAL = {"enabled": False, "button": 1, "hold_ms": 200,
                    "radius": 130, "dead_zone": 34, "keys": {}}
 # A profile is a set of PIPs inside one preset — typically one per character,
@@ -631,7 +631,10 @@ class UpdateCheck(QObject):
 
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
-APP_NAME = "TalesPIP"
+APP_NAME = "TalesHelper"
+# What the program called itself before, so an installation carrying those
+# entries can be tidied up rather than left starting twice.
+FORMER_NAMES = ("TalesPIP",)
 
 
 def is_elevated():
@@ -646,7 +649,7 @@ def is_elevated():
         return False
 
 
-TASK_NAME = "TalesPIP Autostart"
+TASK_NAME = "TalesHelper Autostart"
 CREATE_NO_WINDOW = 0x08000000
 
 
@@ -695,6 +698,29 @@ def startup_command():
     pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
     launcher = pythonw if os.path.exists(pythonw) else sys.executable
     return f'"{launcher}" "{os.path.abspath(__file__)}"'
+
+
+def forget_former_names():
+    """Take away the startup entries an earlier name left behind.
+
+    Its logon entries carry the old name, so without this the machine would
+    keep starting whatever is still at that path, and the new entry would sit
+    alongside it."""
+    found = False
+    for name in FORMER_NAMES:
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0,
+                                 winreg.KEY_SET_VALUE | winreg.KEY_QUERY_VALUE) as key:
+                winreg.QueryValueEx(key, name)
+                winreg.DeleteValue(key, name)
+                found = True
+        except OSError:
+            pass
+        ok, _ = _schtasks("/query", "/tn", f"{name} Autostart")
+        if ok:
+            _schtasks("/delete", "/tn", f"{name} Autostart", "/f")
+            found = True
+    return found
 
 
 def is_startup_enabled():
@@ -2174,7 +2200,7 @@ class SettingsDialog(QDialog):
         self.preview_source = None
         self.preview_timer = QTimer(self)
         self.preview_timer.timeout.connect(self.update_preview)
-        self.setWindowTitle("TalesPIP")
+        self.setWindowTitle("TalesHelper")
         self.setStyleSheet(QSS)
         self.resize(910, 780)
 
@@ -2188,7 +2214,7 @@ class SettingsDialog(QDialog):
         left_layout.setContentsMargins(18, 18, 12, 18)
         left_layout.setSpacing(12)
 
-        title = QLabel(f"TalesPIP <span style='font-size:12px; color:#7d8698;'>"
+        title = QLabel(f"TalesHelper <span style='font-size:12px; color:#7d8698;'>"
                         f"v{APP_VERSION}</span>")
         title.setObjectName("Title")
         left_layout.addWidget(title)
@@ -3048,7 +3074,7 @@ class SettingsDialog(QDialog):
         if not elevated:
             self.lbl_radial_admin.setText(
                 "게임이 관리자 권한으로 실행되기 때문에, 이 기능을 쓰려면 "
-                "TalesPIP도 관리자로 실행해야 합니다. 아래 전체 설정의 "
+                "TalesHelper도 관리자로 실행해야 합니다. 아래 전체 설정의 "
                 "`관리자 권한으로 자동 실행` 을 켜두면 다음 로그온부터 그렇게 뜹니다.")
         elif not options.get("enabled"):
             self.lbl_radial_admin.setText("꺼져 있습니다.")
@@ -3111,7 +3137,7 @@ class SettingsDialog(QDialog):
         if checked and not is_elevated():
             QMessageBox.information(
                 self, "안내",
-                "이 항목을 켜려면 TalesPIP를 관리자 권한으로 실행해야 합니다.\n"
+                "이 항목을 켜려면 TalesHelper를 관리자 권한으로 실행해야 합니다.\n"
                 "작업을 만드는 것 자체에 관리자 권한이 필요합니다.")
             self._loading += 1
             self.chk_task_startup.setChecked(False)
@@ -3910,7 +3936,7 @@ class PipController(QObject):
         self._save_geom_timer.timeout.connect(self.persist_pip_geometry)
 
         self.tray = QSystemTrayIcon(app_icon())
-        self.tray.setToolTip("TalesPIP")
+        self.tray.setToolTip("TalesHelper")
         menu = QMenu()
         menu.setStyleSheet(QSS)
         act_settings = QAction("설정 열기", menu)
@@ -3950,6 +3976,10 @@ class PipController(QObject):
         self.tray.activated.connect(self._on_tray_activated)
         self.tray.show()
 
+        # An installation that was TalesPIP keeps its settings, but its logon
+        # entries point at the old name and have to be replaced.
+        if forget_former_names():
+            set_startup_enabled(True)
         first_run = not os.path.exists(CONFIG_PATH)
         if first_run:
             # Run at logon by default; the checkbox in settings turns it off.
@@ -4255,7 +4285,7 @@ class PipController(QObject):
             if preset != self.active_preset:
                 self.activate_preset(preset, from_auto=True)
                 self.notify(
-                    "TalesPIP",
+                    "TalesHelper",
                     f"해상도 {width}x{height} 프리셋으로 전환했습니다.",
                     QSystemTrayIcon.MessageIcon.Information, 3000)
             return
@@ -4268,7 +4298,7 @@ class PipController(QObject):
         self.set_preset_resolution(empty, width, height)
         self.activate_preset(empty, from_auto=True)
         self.notify(
-            "TalesPIP",
+            "TalesHelper",
             f"새 해상도 {width}x{height} 입니다. 비어 있던 프리셋 {empty} "
             "을(를) 이 해상도에 배정했습니다. 영역을 추가하세요.",
             QSystemTrayIcon.MessageIcon.Information, 4000)
@@ -4313,7 +4343,7 @@ class PipController(QObject):
         if self.settings_dialog and self.settings_dialog.isVisible():
             self.settings_dialog.on_active_profile_changed()
         if changed and notify:
-            self.notify("TalesPIP",
+            self.notify("TalesHelper",
                          f"프로필 {self.profile_name(preset, profile_id)} 로 전환했습니다.",
                          QSystemTrayIcon.MessageIcon.Information, 1500)
 
@@ -4649,9 +4679,9 @@ class PipController(QObject):
         if hasattr(self, "act_hide"):
             self.act_hide.setChecked(self.pips_hidden)
         if not self.was_running or not self.target_hwnd:
-            self.tray.setToolTip(f"TalesPIP — {TARGET_LABEL} 실행 대기 중")
+            self.tray.setToolTip(f"TalesHelper — {TARGET_LABEL} 실행 대기 중")
             return
-        state = f"TalesPIP — {self.preset_name(self.active_preset)}"
+        state = f"TalesHelper — {self.preset_name(self.active_preset)}"
         if self.auto_hidden:
             state += " (자동 숨김)"
         if len(self.preset_profiles(self.active_preset)) > 1:
@@ -4987,7 +5017,7 @@ def acquire_single_instance():
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.CreateMutexW.restype = wintypes.HANDLE
     kernel32.CreateMutexW.argtypes = [wintypes.LPCVOID, wintypes.BOOL, wintypes.LPCWSTR]
-    handle = kernel32.CreateMutexW(None, False, "Local\\TalesPIPSingleton")
+    handle = kernel32.CreateMutexW(None, False, "Local\\TalesHelperSingleton")
     if not handle:
         return True          # cannot tell; better to run than to refuse
     if ctypes.get_last_error() == ERROR_ALREADY_EXISTS:
@@ -5005,7 +5035,7 @@ def main():
     if guard is None:
         ctypes.windll.user32.MessageBoxW(
             0, "Tales PIP가 이미 실행 중입니다.\n트레이 아이콘을 확인하세요.",
-            "TalesPIP", 0x40)
+            "TalesHelper", 0x40)
         sys.exit(0)
     try:
         controller = PipController()

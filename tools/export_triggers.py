@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Turn triggers captured in the app into images the build can ship.
 
-Capture the graphics in TalesPIP first (설정 > 자동 숨김 > 화면에서 추가), then
+Capture the graphics in TalesHelper first (설정 > 자동 숨김 > 화면에서 추가), then
 run this. Every user trigger in config.json is written to assets/triggers/,
 into the hide/ or show/ folder matching its mode, where the next build picks it
 up as a built-in.
