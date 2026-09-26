@@ -752,6 +752,49 @@ def set_startup_enabled(enabled):
         return False
 
 
+def autostart_kind():
+    """Which logon entry is in place, if any: the scheduled task that starts
+    the program elevated, the ordinary Run key, or nothing."""
+    if is_task_startup_enabled():
+        return "task"
+    if is_startup_enabled():
+        return "run"
+    return None
+
+
+def set_autostart(enabled):
+    """The two forms are one switch. Which form it takes follows how the
+    program is running right now: as administrator it becomes the scheduled
+    task, which is the only entry that can bring it back elevated, and
+    otherwise the Run key. Never both, or it would start twice."""
+    if not enabled:
+        ok = set_startup_enabled(False)
+        if is_task_startup_enabled():
+            ok = set_task_startup(False) and ok
+        return ok
+    if is_elevated():
+        if not set_task_startup(True):
+            return False
+        set_startup_enabled(False)
+        return True
+    # Taking an elevated task away needs the rights that made it, so leave it
+    # be: it already starts the program at logon, which is what was asked.
+    if is_task_startup_enabled():
+        return True
+    return set_startup_enabled(True)
+
+
+def refresh_autostart():
+    """Re-point whichever entry exists at this build. Both store an absolute
+    path, so moving the program would otherwise leave the entry aimed at a
+    file that is no longer there while the checkbox still reads as on."""
+    kind = autostart_kind()
+    if kind == "run":
+        set_startup_enabled(True)
+    elif kind == "task" and is_elevated():
+        set_task_startup(True)
+
+
 BUILTIN_POSITIONS_PATH = os.path.join(BUILTIN_TRIGGER_DIR, "positions.json")
 
 
@@ -1356,10 +1399,9 @@ MAPVK_VK_TO_VSC = 0
 EXTENDED_VKS = {0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2D, 0x2E, 0x2C}
 # The eight sectors, in the order the angle from the centre lands in them.
 RADIAL_ORDER = ("e", "ne", "n", "nw", "w", "sw", "s", "se")
-RADIAL_LAYOUT = (("nw", "n", "ne"), ("w", "center", "e"), ("sw", "s", "se"))
 RADIAL_LABELS = {"n": "위", "ne": "오른쪽 위", "e": "오른쪽", "se": "오른쪽 아래",
                   "s": "아래", "sw": "왼쪽 아래", "w": "왼쪽", "nw": "왼쪽 위",
-                  "center": "가운데"}
+                  "center": "가운데 (닫기)"}
 
 
 class MSLLHOOKSTRUCT(ctypes.Structure):
@@ -1444,6 +1486,66 @@ def button_click(which):
         item.mi = MOUSEINPUT(0, 0, data, flag, 0, None)
         events.append(item)
     return events
+
+
+def draw_ring(painter, centre, radius, dead, labels, active, hover=None):
+    """One drawing for the live menu and for the settings preview, so the two
+    cannot drift apart."""
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    box = QRect(int(centre.x() - radius), int(centre.y() - radius),
+                 int(radius * 2), int(radius * 2))
+
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor(18, 20, 25, 205))
+    painter.drawEllipse(box)
+    for index, name in enumerate(RADIAL_ORDER):
+        start = int((index * 45 - 22.5) * 16)
+        if name == active:
+            painter.setBrush(QColor(76, 125, 255, 190))
+        elif name == hover:
+            painter.setBrush(QColor(58, 66, 84, 190))
+        elif labels.get(name):
+            painter.setBrush(QColor(46, 52, 66, 150))
+        else:
+            painter.setBrush(QColor(30, 34, 42, 110))
+        painter.drawPie(box, start, 45 * 16)
+    painter.setPen(QPen(QColor(255, 255, 255, 40), 1))
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    for index in range(8):
+        angle = math.radians(index * 45 + 22.5)
+        painter.drawLine(centre,
+                          QPoint(int(centre.x() + math.cos(angle) * radius),
+                                 int(centre.y() - math.sin(angle) * radius)))
+    painter.drawEllipse(box)
+
+    font = painter.font()
+    font.setBold(True)
+    font.setPointSize(font.pointSize() + 1)
+    painter.setFont(font)
+    for index, name in enumerate(RADIAL_ORDER):
+        angle = math.radians(index * 45)
+        at = QPoint(int(centre.x() + math.cos(angle) * radius * 0.66),
+                     int(centre.y() - math.sin(angle) * radius * 0.66))
+        text = labels.get(name) or "-"
+        painter.setPen(QColor(245, 248, 255) if labels.get(name)
+                        else QColor(130, 138, 152))
+        painter.drawText(QRect(at.x() - 46, at.y() - 12, 92, 24),
+                          Qt.AlignmentFlag.AlignCenter, text)
+
+    inner = QRect(int(centre.x() - dead), int(centre.y() - dead),
+                   int(dead * 2), int(dead * 2))
+    painter.setPen(Qt.PenStyle.NoPen)
+    if active == "center":
+        painter.setBrush(QColor(76, 125, 255, 190))
+    elif hover == "center":
+        painter.setBrush(QColor(58, 66, 84, 225))
+    else:
+        painter.setBrush(QColor(12, 14, 18, 225))
+    painter.drawEllipse(inner)
+    painter.setPen(QColor(245, 248, 255) if active == "center"
+                    else QColor(150, 158, 172))
+    painter.drawText(inner, Qt.AlignmentFlag.AlignCenter,
+                      labels.get("center") or "취소")
 
 
 def direction_at(centre, point, dead_zone):
@@ -1547,60 +1649,78 @@ class RadialMenu(Hud):
 
     def paintEvent(self, e):
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         side = min(self.width(), self.height())
         scale = side / float(self.radius * 2 + 80) if self.radius else 1.0
-        radius = self.radius * scale
-        dead = self.dead_zone * scale
-        centre = QPoint(self.width() // 2, self.height() // 2)
-        box = QRect(int(centre.x() - radius), int(centre.y() - radius),
-                     int(radius * 2), int(radius * 2))
+        draw_ring(painter, QPoint(self.width() // 2, self.height() // 2),
+                   self.radius * scale, self.dead_zone * scale,
+                   self.labels, self.active)
 
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(18, 20, 25, 205))
-        painter.drawEllipse(box)
-        for index, name in enumerate(RADIAL_ORDER):
-            start = int((index * 45 - 22.5) * 16)
-            if name == self.active:
-                painter.setBrush(QColor(76, 125, 255, 190))
-            elif self.labels.get(name):
-                painter.setBrush(QColor(46, 52, 66, 150))
-            else:
-                painter.setBrush(QColor(30, 34, 42, 110))
-            painter.drawPie(box, start, 45 * 16)
-        painter.setPen(QPen(QColor(255, 255, 255, 40), 1))
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        for index in range(8):
-            angle = math.radians(index * 45 + 22.5)
-            painter.drawLine(centre,
-                              QPoint(int(centre.x() + math.cos(angle) * radius),
-                                     int(centre.y() - math.sin(angle) * radius)))
-        painter.drawEllipse(box)
 
-        font = painter.font()
-        font.setBold(True)
-        font.setPointSize(font.pointSize() + 1)
-        painter.setFont(font)
-        for index, name in enumerate(RADIAL_ORDER):
-            angle = math.radians(index * 45)
-            at = QPoint(int(centre.x() + math.cos(angle) * radius * 0.66),
-                         int(centre.y() - math.sin(angle) * radius * 0.66))
-            text = self.labels.get(name) or "-"
-            painter.setPen(QColor(245, 248, 255) if self.labels.get(name)
-                            else QColor(130, 138, 152))
-            painter.drawText(QRect(at.x() - 46, at.y() - 12, 92, 24),
-                              Qt.AlignmentFlag.AlignCenter, text)
+class RadialPicker(QWidget):
+    """The ring as the game shows it, used in settings as the control that
+    says which direction is being edited. Drawn by the same routine, so what
+    is arranged here is what comes up under the cursor."""
 
-        inner = QRect(int(centre.x() - dead), int(centre.y() - dead),
-                       int(dead * 2), int(dead * 2))
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(76, 125, 255, 190) if self.active == "center"
-                          else QColor(12, 14, 18, 225))
-        painter.drawEllipse(inner)
-        painter.setPen(QColor(245, 248, 255) if self.active == "center"
-                        else QColor(150, 158, 172))
-        painter.drawText(inner, Qt.AlignmentFlag.AlignCenter,
-                          self.labels.get("center") or "취소")
+    picked = pyqtSignal(str)
+
+    def __init__(self):
+        super().__init__()
+        self.setFixedSize(248, 248)
+        self.setMouseTracking(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.labels = {}
+        self.dead_ratio = 0.26
+        self.selected = "n"
+        self.hover = None
+
+    def set_labels(self, labels, dead_ratio=None):
+        self.labels = labels
+        if dead_ratio:
+            self.dead_ratio = max(0.12, min(0.5, dead_ratio))
+        self.update()
+
+    def select(self, name):
+        self.selected = name
+        self.update()
+
+    def _geometry(self):
+        centre = (self.width() / 2.0, self.height() / 2.0)
+        radius = min(self.width(), self.height()) / 2.0 - 4
+        return centre, radius
+
+    def _at(self, point):
+        centre, radius = self._geometry()
+        dx, dy = point.x() - centre[0], point.y() - centre[1]
+        if dx * dx + dy * dy > radius * radius:
+            return None
+        return direction_at(centre, (point.x(), point.y()),
+                             radius * self.dead_ratio)
+
+    def mouseMoveEvent(self, e):
+        name = self._at(e.position().toPoint())
+        if name != self.hover:
+            self.hover = name
+            self.update()
+
+    def leaveEvent(self, e):
+        if self.hover is not None:
+            self.hover = None
+            self.update()
+
+    def mousePressEvent(self, e):
+        name = self._at(e.position().toPoint())
+        if name:
+            self.select(name)
+            self.picked.emit(name)
+
+    def paintEvent(self, e):
+        painter = QPainter(self)
+        centre, radius = self._geometry()
+        if not self.isEnabled():
+            painter.setOpacity(0.4)
+        draw_ring(painter, QPoint(int(centre[0]), int(centre[1])), radius,
+                   radius * self.dead_ratio, self.labels, self.selected,
+                   self.hover if self.isEnabled() else None)
 
 
 class SelectionFrame(Hud):
@@ -2329,8 +2449,10 @@ class SettingsDialog(QDialog):
         self.chk_active.toggled.connect(self._commit_only_when_active)
         self.chk_startup = QCheckBox("윈도우 시작 시 자동 실행")
         self.chk_startup.toggled.connect(self._commit_startup)
-        self.chk_task_startup = QCheckBox("관리자 권한으로 자동 실행")
-        self.chk_task_startup.toggled.connect(self._commit_task_startup)
+        self.lbl_startup = QLabel("")
+        self.lbl_startup.setObjectName("Caption")
+        self.lbl_startup.setWordWrap(True)
+        self.lbl_startup.setContentsMargins(26, 0, 0, 4)
         self.chk_updates = QCheckBox("시작할 때 업데이트 확인")
         self.chk_updates.toggled.connect(self._commit_check_updates)
         self.chk_notify = QCheckBox("트레이 알림 표시")
@@ -2356,7 +2478,7 @@ class SettingsDialog(QDialog):
         global_layout.addWidget(self.chk_follow)
         global_layout.addWidget(self.chk_active)
         global_layout.addWidget(self.chk_startup)
-        global_layout.addWidget(self.chk_task_startup)
+        global_layout.addWidget(self.lbl_startup)
         global_layout.addWidget(self.chk_updates)
         global_layout.addWidget(self.chk_notify)
         global_layout.addWidget(self.chk_hover)
@@ -2400,39 +2522,44 @@ class SettingsDialog(QDialog):
         hold_row.addStretch()
         radial_layout.addLayout(hold_row)
 
-        self.radial_keys = {}
-        self.radial_names = {}
-        key_grid = QGridLayout()
-        key_grid.setHorizontalSpacing(6)
-        key_grid.setVerticalSpacing(10)
-        for row, names in enumerate(RADIAL_LAYOUT):
-            for column, name in enumerate(names):
-                cell = QVBoxLayout()
-                cell.setSpacing(2)
-                editor = HotkeyEdit(require_mods=False,
-                                     empty_text="취소" if name == "center" else "-")
-                editor.setToolTip(RADIAL_LABELS[name] + " — 보낼 키")
-                editor.captured.connect(
-                    lambda key, n=name: self._commit_radial_key(n, key))
-                title = QLineEdit()
-                title.setPlaceholderText("이름")
-                title.setMaxLength(12)
-                title.setToolTip(RADIAL_LABELS[name] + " — 메뉴에 보일 이름")
-                title.editingFinished.connect(
-                    lambda n=name: self._commit_radial_label(n))
-                self.radial_keys[name] = editor
-                self.radial_names[name] = title
-                cell.addWidget(editor)
-                cell.addWidget(title)
-                key_grid.addLayout(cell, row, column)
-        radial_layout.addLayout(key_grid)
+        self.radial_slot = "n"
+        keys_row = QHBoxLayout()
+        keys_row.setSpacing(18)
+        self.radial_pick = RadialPicker()
+        self.radial_pick.picked.connect(self._pick_radial_slot)
+        keys_row.addWidget(self.radial_pick, 0, Qt.AlignmentFlag.AlignTop)
 
-        hint_keys = QLabel("위에는 보낼 키를, 아래에는 메뉴에 보일 이름을 적습니다. "
-                            "이름을 비우면 키가 그대로 보입니다. "
-                            "Ctrl / Shift / Alt 조합도 됩니다. Del 로 키를 비웁니다.")
+        slot_box = QVBoxLayout()
+        slot_box.setSpacing(6)
+        self.lbl_radial_slot = QLabel(RADIAL_LABELS["n"])
+        self.lbl_radial_slot.setObjectName("SectionTitle")
+        slot_box.addWidget(self.lbl_radial_slot)
+        cap_key = QLabel("보낼 키")
+        cap_key.setObjectName("Caption")
+        slot_box.addWidget(cap_key)
+        self.radial_key = HotkeyEdit(require_mods=False, empty_text="-")
+        self.radial_key.captured.connect(
+            lambda key: self._commit_radial_key(self.radial_slot, key))
+        slot_box.addWidget(self.radial_key)
+        cap_name = QLabel("메뉴에 보일 이름")
+        cap_name.setObjectName("Caption")
+        slot_box.addWidget(cap_name)
+        self.radial_name = QLineEdit()
+        self.radial_name.setPlaceholderText("비우면 키가 그대로 보입니다")
+        self.radial_name.setMaxLength(12)
+        self.radial_name.editingFinished.connect(
+            lambda: self._commit_radial_label(self.radial_slot))
+        slot_box.addWidget(self.radial_name)
+        hint_keys = QLabel("고리에서 한 칸을 누르고 그 칸에 보낼 키를 입력하세요. "
+                            "가운데는 아무것도 하지 않고 닫는 자리입니다. "
+                            "Ctrl / Shift / Alt 조합도 되고, Del 로 비웁니다.")
         hint_keys.setObjectName("Caption")
         hint_keys.setWordWrap(True)
-        radial_layout.addWidget(hint_keys)
+        slot_box.addWidget(hint_keys)
+        slot_box.addStretch()
+        keys_row.addLayout(slot_box, 1)
+        radial_layout.addLayout(keys_row)
+
         mouse_layout.addWidget(radial_card)
 
         hotkey_card, hotkey_layout = make_card("단축키")
@@ -2724,9 +2851,9 @@ class SettingsDialog(QDialog):
         try:
             self.chk_follow.setChecked(bool(self.controller.config.get("follow_target", True)))
             self.chk_active.setChecked(bool(self.controller.config.get("only_when_active", True)))
-            # The registry is the source of truth, not config.json.
-            self.chk_startup.setChecked(is_startup_enabled())
-            self.chk_task_startup.setChecked(is_task_startup_enabled())
+            # Windows itself is the source of truth here, not config.json.
+            self.chk_startup.setChecked(autostart_kind() is not None)
+            self._describe_autostart()
             self.chk_updates.setChecked(bool(self.controller.config.get("check_updates", True)))
             self.chk_notify.setChecked(bool(self.controller.config.get("notifications", True)))
             self.chk_hover.setChecked(bool(self.controller.config.get("dim_on_hover", True)))
@@ -3064,15 +3191,37 @@ class SettingsDialog(QDialog):
         save_config(self.controller.config)
         self.controller.sync_active_state()
 
+    def _describe_autostart(self):
+        kind = autostart_kind()
+        if kind == "task":
+            self.lbl_startup.setText(
+                "관리자 권한으로 등록되어 있습니다. 사이드 버튼 메뉴는 이 상태라야 "
+                "게임에서 동작합니다.")
+        elif kind == "run":
+            self.lbl_startup.setText(
+                "일반 권한으로 등록되어 있습니다. 관리자 권한으로 실행한 뒤 이 항목을 "
+                "껐다 다시 켜면 관리자 권한으로 바뀝니다.")
+        else:
+            self.lbl_startup.setText(
+                "관리자 권한으로 실행한 상태에서 켜면 관리자 권한으로 등록됩니다.")
+
     def _commit_startup(self, checked):
         if self._loading:
             return
-        if set_startup_enabled(checked):
-            return
-        QMessageBox.warning(self, "안내", "시작 프로그램 등록에 실패했습니다.")
+        if not checked and autostart_kind() == "task" and not is_elevated():
+            QMessageBox.information(
+                self, "안내",
+                "관리자 권한으로 등록되어 있어, 끄는 것도 관리자 권한이 필요합니다. "
+                "TalesHelper를 관리자 권한으로 실행한 뒤 다시 시도하세요.")
+            ok = False
+        else:
+            ok = set_autostart(checked)
+            if not ok:
+                QMessageBox.warning(self, "안내", "자동 실행 설정을 바꾸지 못했습니다.")
         self._loading += 1
         try:
-            self.chk_startup.setChecked(not checked)
+            self.chk_startup.setChecked(autostart_kind() is not None)
+            self._describe_autostart()
         finally:
             self._loading -= 1
 
@@ -3145,28 +3294,53 @@ class SettingsDialog(QDialog):
             index = self.combo_radial_button.findData(options.get("button", 1))
             self.combo_radial_button.setCurrentIndex(max(0, index))
             self.spin_radial_hold.setValue(int(options.get("hold_ms", 200)))
-            for name, editor in self.radial_keys.items():
-                bound = (options.get("keys") or {}).get(name)
-                editor.set_value(bound)
-                self.radial_names[name].setText((bound or {}).get("label", ""))
+            self._show_radial_slot()
         finally:
             self._loading -= 1
         live = elevated and options.get("enabled")
-        for widget in ([self.combo_radial_button, self.spin_radial_hold]
-                        + list(self.radial_keys.values())
-                        + list(self.radial_names.values())):
+        for widget in (self.combo_radial_button, self.spin_radial_hold,
+                        self.radial_pick, self.radial_key, self.radial_name):
             widget.setEnabled(bool(live))
         if not elevated:
             self.lbl_radial_admin.setText(
                 "게임이 관리자 권한으로 실행되기 때문에, 이 기능을 쓰려면 "
-                "TalesHelper도 관리자로 실행해야 합니다. 아래 전체 설정의 "
-                "`관리자 권한으로 자동 실행` 을 켜두면 다음 로그온부터 그렇게 뜹니다.")
+                "TalesHelper도 관리자로 실행해야 합니다. 관리자 권한으로 실행한 뒤 "
+                "`일반` 의 `윈도우 시작 시 자동 실행` 을 켜두면, 다음 로그온부터는 "
+                "그대로 관리자 권한으로 뜹니다.")
         elif not options.get("enabled"):
             self.lbl_radial_admin.setText("꺼져 있습니다.")
         else:
             self.lbl_radial_admin.setText(
                 f"{TARGET_LABEL} 창을 쓰는 동안에만 버튼을 가져옵니다. "
                 "다른 프로그램에서는 원래대로 동작합니다.")
+
+    def _radial_labels(self):
+        """What each wedge reads as in the live menu: the name given to it,
+        or the key itself when none was given."""
+        keys = self._radial_options().get("keys") or {}
+        return {name: (bound or {}).get("label") or (bound or {}).get("text")
+                 for name, bound in keys.items()}
+
+    def _show_radial_slot(self):
+        """Redraw the ring and point the two fields at the chosen wedge."""
+        options = self._radial_options()
+        radius = max(1, int(options.get("radius", 130)))
+        self.radial_pick.set_labels(self._radial_labels(),
+                                     int(options.get("dead_zone", 34)) / radius)
+        self.radial_pick.select(self.radial_slot)
+        bound = (options.get("keys") or {}).get(self.radial_slot)
+        self.lbl_radial_slot.setText(RADIAL_LABELS[self.radial_slot])
+        self.radial_key.set_value(bound)
+        self.radial_key.setToolTip(RADIAL_LABELS[self.radial_slot] + " — 보낼 키")
+        self.radial_name.setText((bound or {}).get("label", ""))
+
+    def _pick_radial_slot(self, name):
+        self.radial_slot = name
+        self._loading += 1
+        try:
+            self._show_radial_slot()
+        finally:
+            self._loading -= 1
 
     def _commit_radial_enabled(self, checked):
         if self._loading:
@@ -3198,8 +3372,7 @@ class SettingsDialog(QDialog):
         else:
             keys.pop(name, None)
         save_config(self.controller.config)
-        self.radial_keys[name].set_value(keys.get(name))
-        self.radial_names[name].setText((keys.get(name) or {}).get("label", ""))
+        self._show_radial_slot()
 
     def _commit_radial_label(self, name):
         if self._loading:
@@ -3207,36 +3380,15 @@ class SettingsDialog(QDialog):
         keys = self._radial_options().setdefault("keys", {})
         bound = keys.get(name)
         if not bound:
-            self.radial_names[name].setText("")
+            self.radial_name.setText("")
             return
-        title = self.radial_names[name].text().strip()[:12]
+        title = self.radial_name.text().strip()[:12]
         if title:
             bound["label"] = title
         else:
             bound.pop("label", None)
         save_config(self.controller.config)
-
-    def _commit_task_startup(self, checked):
-        if self._loading:
-            return
-        if checked and not is_elevated():
-            QMessageBox.information(
-                self, "안내",
-                "이 항목을 켜려면 TalesHelper를 관리자 권한으로 실행해야 합니다.\n"
-                "작업을 만드는 것 자체에 관리자 권한이 필요합니다.")
-            self._loading += 1
-            self.chk_task_startup.setChecked(False)
-            self._loading -= 1
-            return
-        if not set_task_startup(checked):
-            QMessageBox.warning(self, "안내", "작업 스케줄러 항목을 바꾸지 못했습니다.")
-        self._loading += 1
-        self.chk_task_startup.setChecked(is_task_startup_enabled())
-        self._loading -= 1
-        if checked:
-            # Two ways in would start it twice.
-            set_startup_enabled(False)
-            self.chk_startup.setChecked(False)
+        self._show_radial_slot()
 
     def _hotkey_editor(self, key):
         return (self.profile_hotkey_edit if key == "profile_hotkey"
@@ -4072,11 +4224,8 @@ class PipController(QObject):
             # Write the file straight away rather than waiting for the first
             # change, so it is obvious where settings live.
             save_config(self.config)
-        elif is_startup_enabled():
-            # The stored command is an absolute path, so moving the exe would
-            # leave the entry pointing at a file that is no longer there while
-            # the checkbox still reads as enabled. Re-point it at this build.
-            set_startup_enabled(True)
+        else:
+            refresh_autostart()
 
         # The tray icon is the only always-available entry point; if it is
         # unavailable (or hidden in the overflow area on first run) the user
