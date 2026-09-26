@@ -858,7 +858,7 @@ def normalize_radial(raw):
     if not isinstance(raw, dict):
         return out
     out["enabled"] = bool(raw.get("enabled", False))
-    if raw.get("button") in (1, 2):
+    if raw.get("button") in BUTTON_NAMES:
         out["button"] = raw["button"]
     for key, low, high in (("hold_ms", 60, 2000), ("radius", 60, 400),
                             ("dead_zone", 10, 120)):
@@ -1303,10 +1303,21 @@ class Hud(QWidget):
 
 WH_MOUSE_LL = 14
 WM_XBUTTONDOWN, WM_XBUTTONUP = 0x020B, 0x020C
+WM_MBUTTONDOWN, WM_MBUTTONUP = 0x0207, 0x0208
+# The buttons that can carry the menu, as the settings store them. The side
+# buttons say which they are in the message; the wheel click has no such
+# number, so it is given one here.
+BUTTON_BACK, BUTTON_FORWARD, BUTTON_WHEEL = 1, 2, 3
+BUTTON_NAMES = {BUTTON_BACK: "사이드 버튼 1 (뒤로)",
+                 BUTTON_FORWARD: "사이드 버튼 2 (앞으로)",
+                 BUTTON_WHEEL: "휠 클릭"}
+BUTTON_DOWN_MESSAGES = {WM_XBUTTONDOWN, WM_MBUTTONDOWN}
+BUTTON_UP_MESSAGES = {WM_XBUTTONUP, WM_MBUTTONUP}
 LLMHF_INJECTED = 0x00000001
 INPUT_MOUSE, INPUT_KEYBOARD = 0, 1
 KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, KEYEVENTF_EXTENDEDKEY = 0x0002, 0x0008, 0x0001
 MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP = 0x0080, 0x0100
+MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP = 0x0020, 0x0040
 MAPVK_VK_TO_VSC = 0
 EXTENDED_VKS = {0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2D, 0x2E, 0x2C}
 # The eight sectors, in the order the angle from the centre lands in them.
@@ -1387,13 +1398,18 @@ def key_stroke(vk, mods=0):
     return [event for phase in key_phases(vk, mods) for event in phase]
 
 
-def side_click(which):
-    """The side button press we swallowed, put back as it was."""
-    down = INPUT(type=INPUT_MOUSE)
-    down.mi = MOUSEINPUT(0, 0, which, MOUSEEVENTF_XDOWN, 0, None)
-    up = INPUT(type=INPUT_MOUSE)
-    up.mi = MOUSEINPUT(0, 0, which, MOUSEEVENTF_XUP, 0, None)
-    return [down, up]
+def button_click(which):
+    """The press we swallowed, put back as it was."""
+    if which == BUTTON_WHEEL:
+        pairs = ((MOUSEEVENTF_MIDDLEDOWN, 0), (MOUSEEVENTF_MIDDLEUP, 0))
+    else:
+        pairs = ((MOUSEEVENTF_XDOWN, which), (MOUSEEVENTF_XUP, which))
+    events = []
+    for flag, data in pairs:
+        item = INPUT(type=INPUT_MOUSE)
+        item.mi = MOUSEINPUT(0, 0, data, flag, 0, None)
+        events.append(item)
+    return events
 
 
 def direction_at(centre, point, dead_zone):
@@ -1440,14 +1456,16 @@ class SideButtonHook:
 
     def _hook(self, code, wparam, lparam):
         try:
-            if code >= 0 and wparam in (WM_XBUTTONDOWN, WM_XBUTTONUP):
+            pressed = wparam in BUTTON_DOWN_MESSAGES
+            if code >= 0 and (pressed or wparam in BUTTON_UP_MESSAGES):
                 info = ctypes.cast(lparam, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
                 # Our own replayed click comes back through here; let it by.
                 if not info.flags & LLMHF_INJECTED:
-                    which = (info.mouseData >> 16) & 0xFFFF
+                    which = (BUTTON_WHEEL
+                              if wparam in (WM_MBUTTONDOWN, WM_MBUTTONUP)
+                              else (info.mouseData >> 16) & 0xFFFF)
                     at = (info.pt.x, info.pt.y)
-                    handler = (self.on_press if wparam == WM_XBUTTONDOWN
-                                else self.on_release)
+                    handler = self.on_press if pressed else self.on_release
                     if handler(which, at):
                         return 1          # swallowed: the game never sees it
         except Exception:
@@ -2329,8 +2347,8 @@ class SettingsDialog(QDialog):
 
         button_row = QHBoxLayout()
         self.combo_radial_button = QComboBox()
-        self.combo_radial_button.addItem("사이드 버튼 1 (뒤로)", 1)
-        self.combo_radial_button.addItem("사이드 버튼 2 (앞으로)", 2)
+        for value, title in sorted(BUTTON_NAMES.items()):
+            self.combo_radial_button.addItem(title, value)
         self.combo_radial_button.currentIndexChanged.connect(self._commit_radial_button)
         button_row.addWidget(QLabel("사용할 버튼"))
         button_row.addWidget(self.combo_radial_button, 1)
@@ -3759,7 +3777,7 @@ class RadialMenuController(QObject):
         return bool(hwnd and front and pid_of_window(front) == pid_of_window(hwnd))
 
     def _pressed(self, which, at):
-        if not self.wanted() or which != self.options().get("button", 1):
+        if not self.wanted() or which != self.options().get("button", BUTTON_BACK):
             return False
         if not self._game_has_focus():
             return False
@@ -3785,7 +3803,7 @@ class RadialMenuController(QObject):
                                    int(self.options().get("dead_zone", 34)))
             QTimer.singleShot(0, lambda: self._choose(chosen))
         else:
-            QTimer.singleShot(0, lambda: send_input(side_click(button)))
+            QTimer.singleShot(0, lambda: send_input(button_click(button)))
         return True
 
     def _open(self):
