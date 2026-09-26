@@ -3763,12 +3763,16 @@ class RadialMenuController(QObject):
         centre, button = self.centre, self.button
         showing = self.showing
         self._cancel()
+        # Neither the key nor the replayed click may go out from here. This is
+        # the hook, still deciding what to do with the release it was handed,
+        # and input sent while it has not returned comes back through it and
+        # can arrive out of order - a modifier and its key were being split
+        # apart that way. Let the release finish first.
         if showing:
-            self._choose(direction_at(centre, at,
-                                       int(self.options().get("dead_zone", 34))))
+            chosen = direction_at(centre, at,
+                                   int(self.options().get("dead_zone", 34)))
+            QTimer.singleShot(0, lambda: self._choose(chosen))
         else:
-            # Too quick for the menu, so it was an ordinary click. Put it back,
-            # but not from inside the hook: the replay passes through here too.
             QTimer.singleShot(0, lambda: send_input(side_click(button)))
         return True
 
