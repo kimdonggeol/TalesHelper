@@ -1400,8 +1400,7 @@ EXTENDED_VKS = {0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2D, 0x2E, 0x2C
 # The eight sectors, in the order the angle from the centre lands in them.
 RADIAL_ORDER = ("e", "ne", "n", "nw", "w", "sw", "s", "se")
 RADIAL_LABELS = {"n": "위", "ne": "오른쪽 위", "e": "오른쪽", "se": "오른쪽 아래",
-                  "s": "아래", "sw": "왼쪽 아래", "w": "왼쪽", "nw": "왼쪽 위",
-                  "center": "가운데 (닫기)"}
+                  "s": "아래", "sw": "왼쪽 아래", "w": "왼쪽", "nw": "왼쪽 위"}
 
 
 class MSLLHOOKSTRUCT(ctypes.Structure):
@@ -1544,8 +1543,7 @@ def draw_ring(painter, centre, radius, dead, labels, active, hover=None):
     painter.drawEllipse(inner)
     painter.setPen(QColor(245, 248, 255) if active == "center"
                     else QColor(150, 158, 172))
-    painter.drawText(inner, Qt.AlignmentFlag.AlignCenter,
-                      labels.get("center") or "취소")
+    painter.drawText(inner, Qt.AlignmentFlag.AlignCenter, "취소")
 
 
 def direction_at(centre, point, dead_zone):
@@ -1693,8 +1691,9 @@ class RadialPicker(QWidget):
         dx, dy = point.x() - centre[0], point.y() - centre[1]
         if dx * dx + dy * dy > radius * radius:
             return None
-        return direction_at(centre, (point.x(), point.y()),
+        name = direction_at(centre, (point.x(), point.y()),
                              radius * self.dead_ratio)
+        return None if name == "center" else name
 
     def mouseMoveEvent(self, e):
         name = self._at(e.position().toPoint())
@@ -2551,7 +2550,7 @@ class SettingsDialog(QDialog):
             lambda: self._commit_radial_label(self.radial_slot))
         slot_box.addWidget(self.radial_name)
         hint_keys = QLabel("고리에서 한 칸을 누르고 그 칸에 보낼 키를 입력하세요. "
-                            "가운데는 아무것도 하지 않고 닫는 자리입니다. "
+                            "가운데로 두고 버튼을 떼면 아무것도 보내지 않고 닫힙니다. "
                             "Ctrl / Shift / Alt 조합도 되고, Del 로 비웁니다.")
         hint_keys.setObjectName("Caption")
         hint_keys.setWordWrap(True)
@@ -4095,6 +4094,8 @@ class RadialMenuController(QObject):
     PHASE_MS = 20
 
     def _choose(self, direction):
+        if direction == "center":
+            return
         bound = (self.options().get("keys") or {}).get(direction)
         if not bound:
             return
