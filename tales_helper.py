@@ -415,6 +415,18 @@ class HotkeyFilter(QAbstractNativeEventFilter):
 
 
 user32.GetForegroundWindow.restype = wintypes.HWND
+user32.WindowFromPoint.restype = wintypes.HWND
+user32.WindowFromPoint.argtypes = [wintypes.POINT]
+
+
+def window_at(at):
+    """The window under a screen point. Windows skips hidden, disabled and
+    input-transparent ones, so a click-through PIP does not stand in for the
+    window it is sitting on."""
+    point = wintypes.POINT()
+    point.x, point.y = int(at[0]), int(at[1])
+    return user32.WindowFromPoint(point)
+
 
 def pid_of_window(hwnd):
     pid = wintypes.DWORD()
@@ -3310,8 +3322,8 @@ class SettingsDialog(QDialog):
             self.lbl_radial_admin.setText("꺼져 있습니다.")
         else:
             self.lbl_radial_admin.setText(
-                f"{TARGET_LABEL} 창을 쓰는 동안에만 버튼을 가져옵니다. "
-                "다른 프로그램에서는 원래대로 동작합니다.")
+                f"커서가 {TARGET_LABEL} 창 위에 있을 때만 버튼을 가져옵니다. "
+                "창모드로 옆에 띄워둔 브라우저 같은 곳에서는 원래대로 동작합니다.")
 
     def _radial_labels(self):
         """What each wedge reads as in the live menu: the name given to it,
@@ -4031,17 +4043,35 @@ class RadialMenuController(QObject):
         self._cancel()
         self.hook.stop()
 
-    def _game_has_focus(self):
-        """Only take the button while the game is the window being used.
-        Elsewhere it is somebody's Back button and none of our business."""
+    def _game_is_ours(self, at):
+        """Only take the button while the game is the window being used and
+        the cursor is over it. Elsewhere it is somebody's Back button and
+        none of our business.
+
+        The focus alone is not enough. In windowed play a browser can sit
+        beside the game, and a hook is handed the button before it is routed:
+        at that moment the browser has not been raised yet, so the game still
+        reads as the window in front. Where the cursor is says which of the
+        two the press was meant for.
+
+        The focus is still needed as well, because a key goes to whatever has
+        it - pressing over an unfocused game would put the key in whatever
+        window the user was actually typing into."""
         hwnd = self.controller.target_hwnd
         front = user32.GetForegroundWindow()
-        return bool(hwnd and front and pid_of_window(front) == pid_of_window(hwnd))
+        if not (hwnd and front and pid_of_window(front) == pid_of_window(hwnd)):
+            return False
+        under = window_at(at)
+        if not under:
+            return False
+        # Our own windows count as the game: an opaque PIP is something the
+        # user reads as part of that screen, not as another program.
+        return pid_of_window(under) in (pid_of_window(hwnd), os.getpid())
 
     def _pressed(self, which, at):
         if not self.wanted() or which != self.options().get("button", BUTTON_BACK):
             return False
-        if not self._game_has_focus():
+        if not self._game_is_ours(at):
             return False
         self.centre = at
         self.button = which
