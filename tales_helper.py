@@ -193,7 +193,8 @@ DEFAULT_PROFILE_HOTKEY = {"mods": MOD_CONTROL, "vk": 0x7A, "text": "Ctrl+F11"}
 # The game runs as administrator, and Windows will not let a program of lower
 # privilege take a button away from it or send it a key, so this only works
 # when TalesHelper is elevated too.
-DEFAULT_RADIAL = {"enabled": False, "button": 1, "hold_ms": 200,
+DEFAULT_RADIAL = {"enabled": False, "use_board": False,
+                   "button": 1, "hold_ms": 200,
                    "radius": 130, "dead_zone": 34, "keys": {}}
 # A profile is a set of PIPs inside one preset — typically one per character,
 # since two characters at the same resolution want different regions shown.
@@ -939,6 +940,7 @@ def normalize_radial(raw):
     if not isinstance(raw, dict):
         return out
     out["enabled"] = bool(raw.get("enabled", False))
+    out["use_board"] = bool(raw.get("use_board", False))
     if raw.get("button") in BUTTON_NAMES:
         out["button"] = raw["button"]
     for key, low, high in (("hold_ms", 60, 2000), ("radius", 60, 400),
@@ -1565,6 +1567,240 @@ def direction_at(centre, point, dead_zone):
         return "center"
     angle = math.degrees(math.atan2(-dy, dx))
     return RADIAL_ORDER[round(angle / 45.0) % 8]
+
+
+# --- 키를 키보드가 직접 치게 하기 ------------------------------------------
+
+# QMK 가 로우 HID 인터페이스에 쓰는 usage. Vial 도 같은 자리를 씁니다.
+RAW_USAGE_PAGE, RAW_USAGE = 0xFF60, 0x61
+BOARD_REPORT = 32                 # QMK 의 RAW_EPSIZE
+TH_PRESS, TH_RELEASE, TH_PING = 0x40, 0x41, 0x42
+BOARD_HOLD_MS = 40                # 한 프레임에 한 번 읽는 게임도 보도록
+
+RIDI_DEVICENAME = 0x20000007
+RIDI_DEVICEINFO = 0x2000000B
+RIM_TYPEHID = 2
+GENERIC_READ, GENERIC_WRITE = 0x80000000, 0x40000000
+FILE_SHARE_READ, FILE_SHARE_WRITE = 0x01, 0x02
+OPEN_EXISTING = 3
+FILE_FLAG_OVERLAPPED = 0x40000000
+INVALID_HANDLE = ctypes.c_void_p(-1).value
+
+
+class RAWINPUTDEVICELIST(ctypes.Structure):
+    _fields_ = [("hDevice", wintypes.HANDLE), ("dwType", wintypes.DWORD)]
+
+
+class RID_DEVICE_INFO_HID(ctypes.Structure):
+    _fields_ = [("dwVendorId", wintypes.DWORD), ("dwProductId", wintypes.DWORD),
+                 ("dwVersionNumber", wintypes.DWORD),
+                 ("usUsagePage", wintypes.USHORT), ("usUsage", wintypes.USHORT)]
+
+
+class RID_DEVICE_INFO(ctypes.Structure):
+    class _Union(ctypes.Union):
+        # 가장 큰 멤버가 keyboard 쪽 DWORD 여섯 개입니다. 크기가 틀리면
+        # 윈도우가 cbSize 를 보고 그냥 거절합니다.
+        _fields_ = [("hid", RID_DEVICE_INFO_HID), ("_pad", ctypes.c_byte * 24)]
+    _fields_ = [("cbSize", wintypes.DWORD), ("dwType", wintypes.DWORD),
+                 ("u", _Union)]
+
+
+class OVERLAPPED(ctypes.Structure):
+    _fields_ = [("Internal", ctypes.c_void_p), ("InternalHigh", ctypes.c_void_p),
+                 ("Offset", wintypes.DWORD), ("OffsetHigh", wintypes.DWORD),
+                 ("hEvent", wintypes.HANDLE)]
+
+
+kernel32 = ctypes.windll.kernel32
+kernel32.CreateFileW.restype = wintypes.HANDLE
+kernel32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                  ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD,
+                                  wintypes.HANDLE]
+kernel32.CreateEventW.restype = wintypes.HANDLE
+kernel32.CreateEventW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.BOOL,
+                                   wintypes.LPCWSTR]
+
+
+# VK 를 HID 사용 ID 로. QMK 의 KC_* 가 그대로 이 값입니다.
+QK_LCTL, QK_LSFT, QK_LALT, QK_LGUI = 0x0100, 0x0200, 0x0400, 0x0800
+VK_TO_QMK = {0x0D: 0x28, 0x1B: 0x29, 0x08: 0x2A, 0x09: 0x2B, 0x20: 0x2C,
+             0xBD: 0x2D, 0xBB: 0x2E, 0xDB: 0x2F, 0xDD: 0x30, 0xDC: 0x31,
+             0xBA: 0x33, 0xDE: 0x34, 0xC0: 0x35, 0xBC: 0x36, 0xBE: 0x37,
+             0xBF: 0x38, 0x14: 0x39, 0x2C: 0x46, 0x91: 0x47, 0x13: 0x48,
+             0x2D: 0x49, 0x24: 0x4A, 0x21: 0x4B, 0x2E: 0x4C, 0x23: 0x4D,
+             0x22: 0x4E, 0x27: 0x4F, 0x25: 0x50, 0x28: 0x51, 0x26: 0x52,
+             0x90: 0x53, 0x6F: 0x54, 0x6A: 0x55, 0x6D: 0x56, 0x6B: 0x57,
+             0x60: 0x62, 0x6E: 0x63}
+for _vk in range(0x41, 0x5B):                 # A-Z
+    VK_TO_QMK[_vk] = 0x04 + _vk - 0x41
+for _vk in range(0x31, 0x3A):                 # 1-9
+    VK_TO_QMK[_vk] = 0x1E + _vk - 0x31
+VK_TO_QMK[0x30] = 0x27                        # 0
+for _i in range(12):                          # F1-F12
+    VK_TO_QMK[0x70 + _i] = 0x3A + _i
+for _i in range(12):                          # F13-F24
+    VK_TO_QMK[0x7C + _i] = 0x68 + _i
+for _i in range(1, 10):                       # 숫자판 1-9
+    VK_TO_QMK[0x60 + _i] = 0x58 + _i
+
+
+def qmk_keycode(vk, mods):
+    """QMK 의 16비트 키코드. 수정자는 상위 비트로 얹습니다."""
+    base = VK_TO_QMK.get(vk)
+    if base is None:
+        return None
+    for bit, flag in ((MOD_CONTROL, QK_LCTL), (MOD_SHIFT, QK_LSFT),
+                       (MOD_ALT, QK_LALT), (MOD_WIN, QK_LGUI)):
+        if mods & bit:
+            base |= flag
+    return base
+
+
+def find_board():
+    """QMK 로우 HID 인터페이스를 찾습니다. (경로, VID, PID) 또는 None.
+
+    원시 입력 목록으로 찾습니다. hidapi 를 끌어오지 않아도 되고, 장치
+    경로도 여기서 그대로 나옵니다."""
+    count = wintypes.UINT(0)
+    size = ctypes.sizeof(RAWINPUTDEVICELIST)
+    user32.GetRawInputDeviceList(None, ctypes.byref(count), size)
+    if not count.value:
+        return None
+    devices = (RAWINPUTDEVICELIST * count.value)()
+    found = user32.GetRawInputDeviceList(devices, ctypes.byref(count), size)
+    if found in (0, -1):
+        return None
+    for device in devices[:found]:
+        if device.dwType != RIM_TYPEHID:
+            continue
+        info = RID_DEVICE_INFO()
+        info.cbSize = ctypes.sizeof(RID_DEVICE_INFO)
+        wanted = wintypes.UINT(ctypes.sizeof(RID_DEVICE_INFO))
+        if user32.GetRawInputDeviceInfoW(device.hDevice, RIDI_DEVICEINFO,
+                                          ctypes.byref(info),
+                                          ctypes.byref(wanted)) in (0, -1):
+            continue
+        hid = info.u.hid
+        if (hid.usUsagePage, hid.usUsage) != (RAW_USAGE_PAGE, RAW_USAGE):
+            continue
+        length = wintypes.UINT(0)
+        user32.GetRawInputDeviceInfoW(device.hDevice, RIDI_DEVICENAME, None,
+                                       ctypes.byref(length))
+        name = ctypes.create_unicode_buffer(max(2, length.value))
+        if user32.GetRawInputDeviceInfoW(device.hDevice, RIDI_DEVICENAME, name,
+                                          ctypes.byref(length)) in (0, -1):
+            continue
+        return name.value, hid.dwVendorId, hid.dwProductId
+    return None
+
+
+class KeyboardLink:
+    """키를 보내는 대신, 키보드에게 그 키를 치라고 시킵니다.
+
+    그러면 그 입력은 흉내가 아니라 실제로 그 키보드가 보낸 것이 됩니다.
+    SendInput 과 달리 주입 플래그가 붙지 않고, 원시 입력에도 그 키보드의
+    VID/PID 가 그대로 찍힙니다.
+
+    누름과 뗌을 나눠 보냅니다. 펌웨어의 tap_code16 은 둘 사이가 0 인
+    빌드가 많아서, 한 프레임에 한 번 입력을 읽는 게임이 통째로 놓칠 수
+    있기 때문입니다. 얼마나 눌러 둘지는 이쪽이 정합니다."""
+
+    def __init__(self):
+        self.handle = None
+        self.path = None
+        self.vid = self.pid = 0
+
+    def open(self):
+        if self.handle:
+            return True
+        found = find_board()
+        if not found:
+            return False
+        self.path, self.vid, self.pid = found
+        handle = kernel32.CreateFileW(
+            self.path, GENERIC_READ | GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE, None, OPEN_EXISTING, 0, None)
+        if handle == INVALID_HANDLE:
+            return False
+        self.handle = handle
+        return True
+
+    def close(self):
+        if self.handle:
+            kernel32.CloseHandle(wintypes.HANDLE(self.handle))
+        self.handle = None
+
+    def _report(self, command, code):
+        """맨 앞 한 바이트는 리포트 ID 입니다. 윈도우가 요구합니다."""
+        head = bytes([0x00, command, code & 0xFF, (code >> 8) & 0xFF])
+        return head + bytes(BOARD_REPORT + 1 - len(head))
+
+    def _write(self, command, code):
+        if not self.open():
+            return False
+        written = wintypes.DWORD()
+        report = self._report(command, code)
+        if not kernel32.WriteFile(wintypes.HANDLE(self.handle), report,
+                                   len(report), ctypes.byref(written), None):
+            # 뽑혔거나 다시 구웠습니다. 다음 번에 새로 찾습니다.
+            self.close()
+            return False
+        return True
+
+    def tap(self, vk, mods, hold_ms=BOARD_HOLD_MS):
+        """키보드가 그 키를 눌렀다 떼게 합니다. 못 보내면 False."""
+        code = qmk_keycode(vk, mods)
+        if code is None or not self._write(TH_PRESS, code):
+            return False
+        QTimer.singleShot(hold_ms, lambda: self._write(TH_RELEASE, code))
+        return True
+
+    def ping(self, wait_ms=300):
+        """펌웨어에 수신기가 올라가 있는지 확인합니다.
+
+        답을 받아야 하므로 겹친 입출력으로 따로 엽니다. 쓰기 경로는 짧고
+        빨라야 해서 그쪽 손잡이는 그대로 둡니다."""
+        found = find_board()
+        if not found:
+            return False, "키보드를 찾지 못했습니다."
+        path, vid, pid = found
+        handle = kernel32.CreateFileW(
+            path, GENERIC_READ | GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE, None, OPEN_EXISTING,
+            FILE_FLAG_OVERLAPPED, None)
+        if handle == INVALID_HANDLE:
+            return False, "키보드를 열지 못했습니다."
+        event = kernel32.CreateEventW(None, True, False, None)
+        try:
+            # 답을 놓치지 않게 읽기를 먼저 걸어 둡니다.
+            reading = OVERLAPPED()
+            reading.hEvent = event
+            buffer = ctypes.create_string_buffer(BOARD_REPORT + 1)
+            got = wintypes.DWORD()
+            kernel32.ReadFile(wintypes.HANDLE(handle), buffer, len(buffer),
+                               ctypes.byref(got), ctypes.byref(reading))
+
+            writing = OVERLAPPED()
+            written = wintypes.DWORD()
+            kernel32.WriteFile(wintypes.HANDLE(handle),
+                                self._report(TH_PING, 0), BOARD_REPORT + 1,
+                                ctypes.byref(written), ctypes.byref(writing))
+
+            if kernel32.WaitForSingleObject(event, wait_ms) != 0:
+                kernel32.CancelIo(wintypes.HANDLE(handle))
+                return False, ("키보드는 찾았지만 응답이 없습니다. "
+                                "펌웨어에 수신기가 안 올라간 것 같습니다.")
+            if buffer.raw[1] != TH_PING:
+                # Vial 펌웨어가 모르는 명령에 제 나름의 답을 보낸 것입니다.
+                # 키보드는 멀쩡하고, 수신기만 아직 안 올라갔습니다.
+                return False, ("키보드는 찾았지만 수신기가 없습니다. "
+                                "firmware 폴더의 파일을 넣어 다시 구우세요.")
+            return True, "연결됨 (VID %04X PID %04X, 펌웨어 v%d)" % (
+                vid, pid, buffer.raw[2])
+        finally:
+            kernel32.CloseHandle(event)
+            kernel32.CloseHandle(wintypes.HANDLE(handle))
 
 
 class SideButtonHook:
@@ -2533,6 +2769,29 @@ class SettingsDialog(QDialog):
         hold_row.addStretch()
         radial_layout.addLayout(hold_row)
 
+        self.chk_board = QCheckBox("키를 키보드가 직접 치게 하기")
+        self.chk_board.toggled.connect(self._commit_board)
+        radial_layout.addWidget(self.chk_board)
+
+        board_row = QHBoxLayout()
+        self.lbl_board = QLabel("")
+        self.lbl_board.setObjectName("Caption")
+        self.lbl_board.setWordWrap(True)
+        btn_board = QPushButton("연결 확인")
+        btn_board.clicked.connect(self._check_board)
+        board_row.addWidget(self.lbl_board, 1)
+        board_row.addWidget(btn_board)
+        radial_layout.addLayout(board_row)
+
+        hint_board = QLabel(
+            "QMK · Vial 키보드에 수신기를 구워 두면, 고른 키를 이 프로그램이 "
+            "보내는 대신 키보드가 직접 칩니다. 손가락으로 친 것과 구분되지 "
+            "않습니다. 키보드를 뽑거나 수신기가 없으면 알아서 원래 방식으로 "
+            "돌아갑니다. 펌웨어는 firmware 폴더에 있습니다.")
+        hint_board.setObjectName("Caption")
+        hint_board.setWordWrap(True)
+        radial_layout.addWidget(hint_board)
+
         self.radial_slot = "n"
         keys_row = QHBoxLayout()
         keys_row.setSpacing(18)
@@ -3305,13 +3564,17 @@ class SettingsDialog(QDialog):
             index = self.combo_radial_button.findData(options.get("button", 1))
             self.combo_radial_button.setCurrentIndex(max(0, index))
             self.spin_radial_hold.setValue(int(options.get("hold_ms", 200)))
+            self.chk_board.setChecked(bool(options.get("use_board")))
             self._show_radial_slot()
         finally:
             self._loading -= 1
         live = elevated and options.get("enabled")
         for widget in (self.combo_radial_button, self.spin_radial_hold,
-                        self.radial_pick, self.radial_key, self.radial_name):
+                        self.radial_pick, self.radial_key, self.radial_name,
+                        self.chk_board):
             widget.setEnabled(bool(live))
+        self.lbl_board.setText("" if not options.get("use_board")
+                                else "`연결 확인` 으로 상태를 볼 수 있습니다.")
         if not elevated:
             self.lbl_radial_admin.setText(
                 "게임이 관리자 권한으로 실행되기 때문에, 이 기능을 쓰려면 "
@@ -3360,6 +3623,24 @@ class SettingsDialog(QDialog):
         save_config(self.controller.config)
         self.controller.radial.apply()
         self._load_radial()
+
+    def _commit_board(self, checked):
+        if self._loading:
+            return
+        self._radial_options()["use_board"] = bool(checked)
+        save_config(self.controller.config)
+        if checked:
+            self._check_board()
+        else:
+            self.controller.radial.board.close()
+            self.lbl_board.setText("")
+
+    def _check_board(self):
+        ok, says = self.controller.radial.board.ping()
+        self.lbl_board.setText(says)
+        if not ok and self.chk_board.isChecked():
+            self.lbl_board.setText(
+                says + " 그동안은 원래 방식으로 보냅니다.")
 
     def _commit_radial_button(self, _index):
         if self._loading:
@@ -4014,6 +4295,7 @@ class RadialMenuController(QObject):
         self.button = None
         self.showing = False
         self.hook = SideButtonHook(self._pressed, self._released)
+        self.board = KeyboardLink()
         self.hold = QTimer(self)
         self.hold.setSingleShot(True)
         self.hold.timeout.connect(self._open)
@@ -4038,10 +4320,12 @@ class RadialMenuController(QObject):
         else:
             self._cancel()
             self.hook.stop()
+            self.board.close()
 
     def stop(self):
         self._cancel()
         self.hook.stop()
+        self.board.close()
 
     def _game_is_ours(self, at):
         """Only take the button while the game is the window being used and
@@ -4128,6 +4412,11 @@ class RadialMenuController(QObject):
             return
         bound = (self.options().get("keys") or {}).get(direction)
         if not bound:
+            return
+        # 키보드가 직접 치게 해 두었다면 그쪽으로. 키보드를 뽑았거나 보낼 수
+        # 없는 키라면 조용히 원래 길로 돌아갑니다.
+        if self.options().get("use_board") and self.board.tap(
+                bound["vk"], bound.get("mods", 0)):
             return
         self._play(key_phases(bound["vk"], bound.get("mods", 0)))
 
