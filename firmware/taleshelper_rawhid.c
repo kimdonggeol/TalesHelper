@@ -24,6 +24,12 @@
 #include QMK_KEYBOARD_H
 #include "raw_hid.h"
 
+/* 오래된 vial-qmk 의 raw_hid.h 에는 이 값이 없어 빌드가 깨집니다. 있으면
+ * 그쪽을 쓰고, 없을 때만 QMK 의 기본값과 같은 32 로 둡니다. */
+#ifndef RAW_EPSIZE
+#    define RAW_EPSIZE 32
+#endif
+
 #define TH_PRESS   0x40
 #define TH_RELEASE 0x41
 #define TH_PING    0x42

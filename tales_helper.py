@@ -1756,11 +1756,39 @@ class KeyboardLink:
         QTimer.singleShot(hold_ms, lambda: self._write(TH_RELEASE, code))
         return True
 
-    def ping(self, wait_ms=300):
+    @staticmethod
+    def _overlapped(call, handle, buffer, length, wait_ms):
+        """겹친 읽기나 쓰기 하나를 끝까지 기다립니다. 옮긴 바이트 수, 또는
+        시간이 다 되었으면 None."""
+        event = kernel32.CreateEventW(None, True, False, None)
+        over = OVERLAPPED()
+        over.hEvent = event
+        moved = wintypes.DWORD()
+        try:
+            if call(wintypes.HANDLE(handle), buffer, int(length),
+                     ctypes.byref(moved), ctypes.byref(over)):
+                return moved.value
+            if kernel32.WaitForSingleObject(event, max(0, int(wait_ms))) != 0:
+                kernel32.CancelIo(wintypes.HANDLE(handle))
+                return None
+            if not kernel32.GetOverlappedResult(wintypes.HANDLE(handle),
+                                                 ctypes.byref(over),
+                                                 ctypes.byref(moved), False):
+                return None
+            return moved.value
+        finally:
+            kernel32.CloseHandle(event)
+
+    def ping(self, wait_ms=400):
         """펌웨어에 수신기가 올라가 있는지 확인합니다.
 
         답을 받아야 하므로 겹친 입출력으로 따로 엽니다. 쓰기 경로는 짧고
-        빨라야 해서 그쪽 손잡이는 그대로 둡니다."""
+        빨라야 해서 그쪽 손잡이는 그대로 둡니다.
+
+        답은 하나가 아닙니다. 수신기가 제 답을 보내고 나면, VIA 가 받은
+        리포트를 그대로 한 번 더 되돌려 줍니다. 되돌아온 쪽은 버전 자리가
+        0 이라, 0 이 아닌 답이 나올 때까지 몇 개든 더 읽어 봅니다. 어느
+        쪽이 먼저 도착하든 같은 답이 나옵니다."""
         found = find_board()
         if not found:
             return False, "키보드를 찾지 못했습니다."
@@ -1771,35 +1799,33 @@ class KeyboardLink:
             FILE_FLAG_OVERLAPPED, None)
         if handle == INVALID_HANDLE:
             return False, "키보드를 열지 못했습니다."
-        event = kernel32.CreateEventW(None, True, False, None)
         try:
-            # 답을 놓치지 않게 읽기를 먼저 걸어 둡니다.
-            reading = OVERLAPPED()
-            reading.hEvent = event
+            if self._overlapped(kernel32.WriteFile, handle,
+                                 self._report(TH_PING, 0), BOARD_REPORT + 1,
+                                 200) is None:
+                return False, "키보드에 보내지 못했습니다."
             buffer = ctypes.create_string_buffer(BOARD_REPORT + 1)
-            got = wintypes.DWORD()
-            kernel32.ReadFile(wintypes.HANDLE(handle), buffer, len(buffer),
-                               ctypes.byref(got), ctypes.byref(reading))
-
-            writing = OVERLAPPED()
-            written = wintypes.DWORD()
-            kernel32.WriteFile(wintypes.HANDLE(handle),
-                                self._report(TH_PING, 0), BOARD_REPORT + 1,
-                                ctypes.byref(written), ctypes.byref(writing))
-
-            if kernel32.WaitForSingleObject(event, wait_ms) != 0:
-                kernel32.CancelIo(wintypes.HANDLE(handle))
-                return False, ("키보드는 찾았지만 응답이 없습니다. "
-                                "펌웨어에 수신기가 안 올라간 것 같습니다.")
-            if buffer.raw[1] != TH_PING:
-                # Vial 펌웨어가 모르는 명령에 제 나름의 답을 보낸 것입니다.
-                # 키보드는 멀쩡하고, 수신기만 아직 안 올라갔습니다.
+            deadline = time.monotonic() + wait_ms / 1000.0
+            answered = False
+            while True:
+                left = (deadline - time.monotonic()) * 1000
+                if left <= 0:
+                    break
+                if self._overlapped(kernel32.ReadFile, handle, buffer,
+                                     len(buffer), left) is None:
+                    break
+                answered = True
+                if buffer.raw[1] == TH_PING and buffer.raw[2]:
+                    return True, "연결됨 (VID %04X PID %04X, 펌웨어 v%d)" % (
+                        vid, pid, buffer.raw[2])
+            if answered:
+                # 키보드는 답했지만 수신기의 답이 아닙니다. VIA 가 모르는
+                # 명령에 제 나름대로 돌려준 것입니다.
                 return False, ("키보드는 찾았지만 수신기가 없습니다. "
                                 "firmware 폴더의 파일을 넣어 다시 구우세요.")
-            return True, "연결됨 (VID %04X PID %04X, 펌웨어 v%d)" % (
-                vid, pid, buffer.raw[2])
+            return False, ("키보드는 찾았지만 응답이 없습니다. "
+                            "펌웨어에 수신기가 안 올라간 것 같습니다.")
         finally:
-            kernel32.CloseHandle(event)
             kernel32.CloseHandle(wintypes.HANDLE(handle))
 
 
