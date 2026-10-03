@@ -1718,8 +1718,11 @@ class KeyboardLink:
         if not found:
             return False
         self.path, self.vid, self.pid = found
+        # 쓰기만 엽니다. VIA 는 받은 리포트마다 답을 하나씩 돌려주는데,
+        # 읽기로 열어 두면 그것들이 이 손잡이의 입력 큐에 그대로 쌓입니다.
+        # 누름/뗌 경로는 답을 볼 일이 없습니다.
         handle = kernel32.CreateFileW(
-            self.path, GENERIC_READ | GENERIC_WRITE,
+            self.path, GENERIC_WRITE,
             FILE_SHARE_READ | FILE_SHARE_WRITE, None, OPEN_EXISTING, 0, None)
         if handle == INVALID_HANDLE:
             return False
@@ -1822,7 +1825,7 @@ class KeyboardLink:
                 # 키보드는 답했지만 수신기의 답이 아닙니다. VIA 가 모르는
                 # 명령에 제 나름대로 돌려준 것입니다.
                 return False, ("키보드는 찾았지만 수신기가 없습니다. "
-                                "firmware 폴더의 파일을 넣어 다시 구우세요.")
+                                "firmware/rawkey 를 넣어 다시 구우세요.")
             return False, ("키보드는 찾았지만 응답이 없습니다. "
                             "펌웨어에 수신기가 안 올라간 것 같습니다.")
         finally:
@@ -2813,7 +2816,7 @@ class SettingsDialog(QDialog):
             "QMK · Vial 키보드에 수신기를 구워 두면, 고른 키를 이 프로그램이 "
             "보내는 대신 키보드가 직접 칩니다. 손가락으로 친 것과 구분되지 "
             "않습니다. 키보드를 뽑거나 수신기가 없으면 알아서 원래 방식으로 "
-            "돌아갑니다. 펌웨어는 firmware 폴더에 있습니다.")
+            "돌아갑니다. 펌웨어는 firmware/rawkey 에 있습니다.")
         hint_board.setObjectName("Caption")
         hint_board.setWordWrap(True)
         radial_layout.addWidget(hint_board)
