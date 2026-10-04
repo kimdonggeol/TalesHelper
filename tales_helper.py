@@ -198,8 +198,12 @@ DEFAULT_PROFILE_HOTKEY = {"mods": MOD_CONTROL, "vk": 0x7A, "text": "Ctrl+F11"}
 CHORD_ACTION = "chord"
 DEFAULT_CHORD_KEYS = tuple(range(0x75, 0x7C))
 
+# 마인은 고리와 따로 삽니다. 고리의 한 칸이 아니라 마우스 버튼 하나를
+# 통째로 씁니다.
+DEFAULT_MINE = {"enabled": False, "button": 2, "use_board": True,
+                 "keys": list(DEFAULT_CHORD_KEYS)}
+
 DEFAULT_RADIAL = {"enabled": False, "use_board": True,
-                   "chord_keys": list(DEFAULT_CHORD_KEYS),
                    "button": 1, "hold_ms": 200,
                    "radius": 130, "dead_zone": 34, "keys": {}}
 # A profile is a set of PIPs inside one preset — typically one per character,
@@ -238,6 +242,7 @@ DEFAULT_CONFIG = {
     "pip_coords": "relative",
     "auto_hide": copy.deepcopy(DEFAULT_AUTO_HIDE),
     "radial": copy.deepcopy(DEFAULT_RADIAL),
+    "mine": copy.deepcopy(DEFAULT_MINE),
     "regions": [],
 }
 DEFAULT_REGION_OPTS = {"opacity": 100, "click_through": False, "preset": 1,
@@ -951,15 +956,30 @@ def merge_builtin_triggers(auto):
 BUILTIN_POSITIONS = load_builtin_positions()
 
 
+def normalize_mine(raw, radial=None):
+    """마인 설정. 고리 안에 살던 시절의 `chord_keys` 를 그대로 물려받습니다."""
+    out = copy.deepcopy(DEFAULT_MINE)
+    if isinstance(radial, dict) and radial.get("chord_keys"):
+        out["keys"] = list(radial["chord_keys"])
+    if not isinstance(raw, dict):
+        return out
+    out["enabled"] = bool(raw.get("enabled", False))
+    out["use_board"] = bool(raw.get("use_board", True))
+    if raw.get("button") in BUTTON_NAMES:
+        out["button"] = raw["button"]
+    keys = [vk for vk in (raw.get("keys") or ())
+             if isinstance(vk, int) and 0 < vk < 0x100]
+    if keys:
+        out["keys"] = keys[:BOARD_HELD_MAX]
+    return out
+
+
 def normalize_radial(raw):
     out = copy.deepcopy(DEFAULT_RADIAL)
     if not isinstance(raw, dict):
         return out
     out["enabled"] = bool(raw.get("enabled", False))
     out["use_board"] = bool(raw.get("use_board", True))
-    keys = [vk for vk in (raw.get("chord_keys") or ())
-             if isinstance(vk, int) and 0 < vk < 0x100]
-    out["chord_keys"] = keys[:14] or list(DEFAULT_CHORD_KEYS)
     if raw.get("button") in BUTTON_NAMES:
         out["button"] = raw["button"]
     for key, low, high in (("hold_ms", 60, 2000), ("radius", 60, 400),
@@ -970,10 +990,10 @@ def normalize_radial(raw):
     for name, hotkey in (raw.get("keys") or {}).items():
         if name not in RADIAL_LABELS:
             continue
+        # 마인이 고리의 한 칸이던 시절의 설정은 그냥 빈 칸이 됩니다.
         if isinstance(hotkey, dict) and hotkey.get("action") == CHORD_ACTION:
-            bound = {"action": CHORD_ACTION, "text": "마인"}
-        else:
-            bound = normalize_hotkey(hotkey, require_mods=False)
+            continue
+        bound = normalize_hotkey(hotkey, require_mods=False)
         if not bound:
             continue
         # What to call it in the ring, when the key itself is not the point.
@@ -1121,6 +1141,7 @@ def load_config():
     config["active_preset"] = active if isinstance(active, int) and 1 <= active <= PRESET_COUNT else 1
 
     config["auto_hide"] = normalize_auto_hide(config.get("auto_hide"))
+    config["mine"] = normalize_mine(config.get("mine"), config.get("radial"))
     config["radial"] = normalize_radial(config.get("radial"))
     config["toggle_hotkey"] = normalize_hotkey(config.get("toggle_hotkey"))
     config["profile_hotkey"] = normalize_hotkey(config.get("profile_hotkey"))
@@ -3175,11 +3196,6 @@ class SettingsDialog(QDialog):
         self.lbl_radial_slot = QLabel(RADIAL_LABELS["n"])
         self.lbl_radial_slot.setObjectName("SectionTitle")
         slot_box.addWidget(self.lbl_radial_slot)
-        self.combo_radial_kind = QComboBox()
-        self.combo_radial_kind.addItem("키 보내기", "key")
-        self.combo_radial_kind.addItem("마인", CHORD_ACTION)
-        self.combo_radial_kind.currentIndexChanged.connect(self._commit_radial_kind)
-        slot_box.addWidget(self.combo_radial_kind)
         self.cap_radial_key = QLabel("보낼 키")
         self.cap_radial_key.setObjectName("Caption")
         slot_box.addWidget(self.cap_radial_key)
@@ -3196,11 +3212,6 @@ class SettingsDialog(QDialog):
         self.radial_name.editingFinished.connect(
             lambda: self._commit_radial_label(self.radial_slot))
         slot_box.addWidget(self.radial_name)
-        self.lbl_chord = QLabel("")
-        self.lbl_chord.setObjectName("Caption")
-        self.lbl_chord.setWordWrap(True)
-        self.lbl_chord.hide()
-        slot_box.addWidget(self.lbl_chord)
         hint_keys = QLabel("고리에서 한 칸을 누르고 그 칸에 보낼 키를 입력하세요. "
                             "가운데로 두고 버튼을 떼면 아무것도 보내지 않고 닫힙니다. "
                             "Ctrl / Shift / Alt 조합도 되고, Del 로 비웁니다.")
@@ -3212,6 +3223,41 @@ class SettingsDialog(QDialog):
         radial_layout.addLayout(keys_row)
 
         mouse_layout.addWidget(radial_card)
+
+        mine_card, mine_layout = make_card("마인")
+        hint_mine = QLabel(
+            "고른 버튼을 누르면 아래 칸들이 한꺼번에 눌립니다. 차례로 치는 "
+            "것이 아니라 한 번의 입력에 같이 실립니다. "
+            f"{TARGET_LABEL} 창이 맨 앞에 있을 때만 나갑니다.")
+        hint_mine.setObjectName("Caption")
+        hint_mine.setWordWrap(True)
+        mine_layout.addWidget(hint_mine)
+
+        self.chk_mine = QCheckBox("마인 사용")
+        self.chk_mine.toggled.connect(self._commit_mine_enabled)
+        mine_layout.addWidget(self.chk_mine)
+
+        self.lbl_mine_admin = QLabel("")
+        self.lbl_mine_admin.setObjectName("Caption")
+        self.lbl_mine_admin.setWordWrap(True)
+        mine_layout.addWidget(self.lbl_mine_admin)
+
+        mine_row = QHBoxLayout()
+        self.combo_mine_button = QComboBox()
+        for value, title in sorted(BUTTON_NAMES.items()):
+            self.combo_mine_button.addItem(title, value)
+        self.combo_mine_button.currentIndexChanged.connect(self._commit_mine_button)
+        mine_row.addWidget(QLabel("사용할 버튼"))
+        mine_row.addWidget(self.combo_mine_button, 1)
+        mine_layout.addLayout(mine_row)
+
+        self.lbl_mine_keys = QLabel("")
+        self.lbl_mine_keys.setObjectName("Caption")
+        self.lbl_mine_keys.setWordWrap(True)
+        mine_layout.addWidget(self.lbl_mine_keys)
+
+        mouse_layout.addWidget(mine_card)
+
 
         hotkey_card, hotkey_layout = make_card("단축키")
         self.hotkey_edit = HotkeyEdit()
@@ -3530,6 +3576,7 @@ class SettingsDialog(QDialog):
             self.show_update(self.controller.latest_version)
         self._load_preset_fields()
         self._load_radial()
+        self._load_mine()
         self._reload_profile_combo()
         self.update_preset_state()
         self.reload_region_list()
@@ -3932,6 +3979,81 @@ class SettingsDialog(QDialog):
             self._reload_profile_combo()
             self.reload_region_list()
 
+
+    def _mine_options(self):
+        return self.controller.config.setdefault("mine", copy.deepcopy(DEFAULT_MINE))
+
+    def _load_mine(self):
+        options = self._mine_options()
+        elevated = is_elevated()
+        self._loading += 1
+        try:
+            self.chk_mine.setChecked(bool(options.get("enabled")))
+            self.chk_mine.setEnabled(elevated)
+            index = self.combo_mine_button.findData(options.get("button", 2))
+            self.combo_mine_button.setCurrentIndex(max(0, index))
+        finally:
+            self._loading -= 1
+        live = elevated and options.get("enabled")
+        self.combo_mine_button.setEnabled(bool(live))
+        keys = options.get("keys") or list(DEFAULT_CHORD_KEYS)
+        self.lbl_mine_keys.setText(
+            "누르는 칸: " + ", ".join(vk_text(vk) for vk in keys)
+            + "   (config.json 의 `mine.keys` 에서 바꿉니다)")
+        if not elevated:
+            self.lbl_mine_admin.setText(
+                "게임이 관리자 권한으로 실행되기 때문에, 이 기능을 쓰려면 "
+                "TalesHelper도 관리자로 실행해야 합니다.")
+        elif not options.get("enabled"):
+            self.lbl_mine_admin.setText("꺼져 있습니다.")
+        else:
+            self.lbl_mine_admin.setText(
+                f"커서가 {TARGET_LABEL} 창 위에 있을 때만 버튼을 가져옵니다. "
+                "짧게 누르든 길게 누르든 바로 나가고, 원래 동작은 돌려주지 "
+                "않습니다.")
+
+    def _button_clash(self, which, mine):
+        """두 기능이 같은 버튼을 보면 둘 다 제대로 못 씁니다. 훅은 누가 먼저
+        집는지로 갈리고, 사용자는 왜 하나가 안 되는지 알 길이 없습니다."""
+        other = self._radial_options() if mine else self._mine_options()
+        if not other.get("enabled") or other.get("button") != which:
+            return False
+        QMessageBox.information(
+            self, "안내",
+            "%s 은(는) %s 에서 이미 쓰고 있습니다.\n"
+            "두 기능에 같은 버튼을 줄 수 없습니다. 먼저 그쪽 버튼을 바꾸거나 "
+            "꺼 주세요." % (BUTTON_NAMES.get(which, "그 버튼"),
+                              "사이드 버튼 메뉴" if mine else "마인"))
+        return True
+
+    def _commit_mine_enabled(self, checked):
+        if self._loading:
+            return
+        options = self._mine_options()
+        if checked and self._button_clash(options.get("button", 2), True):
+            self._loading += 1
+            self.chk_mine.setChecked(False)
+            self._loading -= 1
+            return
+        options["enabled"] = bool(checked)
+        save_config(self.controller.config)
+        self.controller.radial.apply()
+        self._load_mine()
+
+    def _commit_mine_button(self, _index):
+        if self._loading:
+            return
+        which = self.combo_mine_button.currentData()
+        if self._button_clash(which, True):
+            self._loading += 1
+            index = self.combo_mine_button.findData(
+                self._mine_options().get("button", 2))
+            self.combo_mine_button.setCurrentIndex(max(0, index))
+            self._loading -= 1
+            return
+        self._mine_options()["button"] = which
+        save_config(self.controller.config)
+
     def _radial_options(self):
         return self.controller.config.setdefault("radial", copy.deepcopy(DEFAULT_RADIAL))
 
@@ -3952,7 +4074,7 @@ class SettingsDialog(QDialog):
         live = elevated and options.get("enabled")
         for widget in (self.combo_radial_button, self.spin_radial_hold,
                         self.radial_pick, self.radial_key, self.radial_name,
-                        self.chk_board, self.combo_radial_kind):
+                        self.chk_board):
             widget.setEnabled(bool(live))
         self.lbl_board.setText("" if not options.get("use_board")
                                 else "`연결 확인` 으로 지금 상태를 볼 수 있습니다. "
@@ -3987,39 +4109,9 @@ class SettingsDialog(QDialog):
         self.radial_pick.select(self.radial_slot)
         bound = (options.get("keys") or {}).get(self.radial_slot)
         self.lbl_radial_slot.setText(RADIAL_LABELS[self.radial_slot])
-        chord = (bound or {}).get("action") == CHORD_ACTION
-        self.combo_radial_kind.setCurrentIndex(1 if chord else 0)
-        self.radial_key.set_value(None if chord else bound)
-        self.radial_key.setVisible(not chord)
-        self.cap_radial_key.setVisible(not chord)
+        self.radial_key.set_value(bound)
         self.radial_key.setToolTip(RADIAL_LABELS[self.radial_slot] + " — 보낼 키")
         self.radial_name.setText((bound or {}).get("label", ""))
-        self.lbl_chord.setVisible(chord)
-        if chord:
-            keys = options.get("chord_keys") or list(DEFAULT_CHORD_KEYS)
-            self.lbl_chord.setText(
-                "이 칸을 고르면 " + ", ".join(vk_text(vk) for vk in keys)
-                + " 를 한꺼번에 누릅니다. "
-                + f"{TARGET_LABEL} 창이 맨 앞에 있을 때만 나갑니다.")
-
-    def _commit_radial_kind(self, _index):
-        if self._loading:
-            return
-        keys = self._radial_options().setdefault("keys", {})
-        if self.combo_radial_kind.currentData() == CHORD_ACTION:
-            label = (keys.get(self.radial_slot) or {}).get("label")
-            keys[self.radial_slot] = {"action": CHORD_ACTION, "text": "마인"}
-            if label:
-                keys[self.radial_slot]["label"] = label
-        else:
-            # 키를 다시 고르기 전까지는 빈 칸입니다.
-            keys.pop(self.radial_slot, None)
-        save_config(self.controller.config)
-        self._loading += 1
-        try:
-            self._show_radial_slot()
-        finally:
-            self._loading -= 1
 
     def _pick_radial_slot(self, name):
         self.radial_slot = name
@@ -4032,10 +4124,17 @@ class SettingsDialog(QDialog):
     def _commit_radial_enabled(self, checked):
         if self._loading:
             return
-        self._radial_options()["enabled"] = bool(checked)
+        options = self._radial_options()
+        if checked and self._button_clash(options.get("button", BUTTON_BACK), False):
+            self._loading += 1
+            self.chk_radial.setChecked(False)
+            self._loading -= 1
+            return
+        options["enabled"] = bool(checked)
         save_config(self.controller.config)
         self.controller.radial.apply()
         self._load_radial()
+        self._load_mine()
 
     def _commit_board(self, checked):
         if self._loading:
@@ -4068,7 +4167,15 @@ class SettingsDialog(QDialog):
     def _commit_radial_button(self, _index):
         if self._loading:
             return
-        self._radial_options()["button"] = self.combo_radial_button.currentData()
+        which = self.combo_radial_button.currentData()
+        if self._button_clash(which, False):
+            self._loading += 1
+            index = self.combo_radial_button.findData(
+                self._radial_options().get("button", BUTTON_BACK))
+            self.combo_radial_button.setCurrentIndex(max(0, index))
+            self._loading -= 1
+            return
+        self._radial_options()["button"] = which
         save_config(self.controller.config)
 
     def _commit_radial_hold(self, value):
@@ -4719,6 +4826,7 @@ class RadialMenuController(QObject):
         self.showing = False
         self.hook = SideButtonHook(self._pressed, self._released)
         self.board = KeyboardLink()
+        self.mine_button = None
         self.hold = QTimer(self)
         self.hold.setSingleShot(True)
         self.hold.timeout.connect(self._open)
@@ -4729,6 +4837,9 @@ class RadialMenuController(QObject):
     def options(self):
         return self.controller.config.get("radial") or {}
 
+    def mine(self):
+        return self.controller.config.get("mine") or {}
+
     def available(self):
         """Elevated, or none of this can work at all."""
         return is_elevated()
@@ -4736,11 +4847,18 @@ class RadialMenuController(QObject):
     def wanted(self):
         return bool(self.options().get("enabled")) and self.available()
 
+    def mine_wanted(self):
+        return bool(self.mine().get("enabled")) and self.available()
+
+    def hook_wanted(self):
+        """둘 중 하나라도 쓰면 훅은 걸려 있어야 합니다."""
+        return self.wanted() or self.mine_wanted()
+
     def apply(self):
         """Put the hook in place, or take it away, to match the settings."""
-        if self.wanted():
+        if self.hook_wanted():
             self.hook.start()
-            if self.options().get("use_board"):
+            if self.options().get("use_board") or self.mine().get("use_board"):
                 self.board.probe()
         else:
             self._cancel()
@@ -4769,14 +4887,14 @@ class RadialMenuController(QObject):
                      and pid_of_window(front) == pid_of_window(hwnd))
 
     def _chord(self):
-        """고른 칸에 걸린 키들을 한꺼번에 누릅니다.
+        """마인에 걸린 키들을 한꺼번에 누릅니다.
 
-        누를 때 게임이 앞에 있었더라도 떼는 사이에 창이 바뀔 수 있어서,
+        버튼을 누를 때 게임이 앞에 있었더라도 그 사이에 창이 바뀔 수 있어서,
         보내기 직전에 한 번 더 봅니다."""
         if not self._game_in_front():
             return
-        keys = self.options().get("chord_keys") or list(DEFAULT_CHORD_KEYS)
-        if self._board_takes_it() and self.board.chord(keys):
+        keys = self.mine().get("keys") or list(DEFAULT_CHORD_KEYS)
+        if self._board_takes_it(self.mine()) and self.board.chord(keys):
             return
         # 한 번의 SendInput 은 한 묶음으로 들어갑니다. 따로 보내면 게임이
         # 프레임 사이에서 끊어 볼 수 있습니다.
@@ -4810,6 +4928,14 @@ class RadialMenuController(QObject):
         return pid_of_window(under) in (pid_of_window(hwnd), os.getpid())
 
     def _pressed(self, which, at):
+        # 마인은 버튼 하나를 통째로 씁니다. 고리처럼 들고 있을 필요가 없어
+        # 누르는 즉시 나가고, 원래 동작은 돌려주지 않습니다.
+        if (self.mine_wanted()
+                and which == self.mine().get("button", BUTTON_FORWARD)
+                and self._game_is_ours(at)):
+            self.mine_button = which
+            QTimer.singleShot(0, self._chord)
+            return True
         if not self.wanted() or which != self.options().get("button", BUTTON_BACK):
             return False
         if not self._game_is_ours(at):
@@ -4821,6 +4947,11 @@ class RadialMenuController(QObject):
         return True
 
     def _released(self, which, at):
+        # 누름을 삼켰으면 뗌도 삼켜야 합니다. 안 그러면 게임이 짝 없는 뗌을
+        # 받습니다.
+        if self.mine_button == which:
+            self.mine_button = None
+            return True
         if self.centre is None or which != self.button:
             return False
         centre, button = self.centre, self.button
@@ -4869,9 +5000,6 @@ class RadialMenuController(QObject):
             return
         bound = (self.options().get("keys") or {}).get(direction)
         if not bound:
-            return
-        if bound.get("action") == CHORD_ACTION:
-            self._chord()
             return
         # 키보드가 직접 치게 해 두었다면 그쪽으로. 키보드를 뽑았거나, 보낼
         # 수 없는 키거나, 지금 누르고 있는 키가 있다면 원래 길로 갑니다.
