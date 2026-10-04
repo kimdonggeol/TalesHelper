@@ -3,6 +3,7 @@ config.json
 config.json.old
 config.json.tmp
 error.log
+keytrace.txt
 
 # Python
 __pycache__/

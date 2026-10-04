@@ -1597,8 +1597,12 @@ def direction_at(centre, point, dead_zone):
 RAW_USAGE_PAGE, RAW_USAGE = 0xFF60, 0x61
 BOARD_REPORT = 32                 # QMK 의 RAW_EPSIZE
 TH_PRESS, TH_RELEASE, TH_PING, TH_CHORD = 0x40, 0x41, 0x42, 0x43
+# 수신기가 다음 키를 어느 키보드 장치로 칠지. 손으로 치는 키와 다른 장치로
+# 나가야 윈도우가 자동 반복을 서로 빼앗지 않습니다.
+BOARD_VIA = {0: "같은 장치", 1: "6KRO 쪽", 2: "NKRO 쪽"}
 BOARD_CHORD_VERSION = 2          # 코드를 아는 수신기부터
 BOARD_REPEAT_VERSION = 3         # 누른 채로도 맡겨도 되는 수신기부터
+BOARD_HELD_MAX = 10              # 수신기의 RAWKEY_HELD_MAX 와 같아야 합니다
 BOARD_HOLD_MS = 40                # 한 프레임에 한 번 읽는 게임도 보도록
 
 RIDI_DEVICENAME = 0x20000007
@@ -1722,13 +1726,15 @@ def find_board():
 def any_key_held():
     """지금 손가락이 누르고 있는 키가 있는지.
 
-    키보드로 보낸 키는 진짜 키라서 윈도우가 자동 반복을 거기로 옮겨 가고,
-    떼면 반복이 그냥 멈춥니다. 아직 눌려 있는 키로 돌아오지 않습니다. 키를
-    누른 채로 스킬이 나가고 있었다면 거기서 끊깁니다.
+    v3 보다 낮은 수신기를 위한 길입니다. 그 시절에는 고리 키가 손으로 치는
+    키와 같은 장치로 나가서, 윈도우가 자동 반복을 고리 키 쪽으로 옮겨 가고
+    떼면 반복이 그냥 멈췄습니다 - 아직 눌려 있는 키로 돌아오지 않았습니다.
+    주입된 키는 그 상태기계에 끼어들지 않으므로, 무언가 눌려 있는 동안에는
+    키보드 대신 그쪽으로 보냈습니다.
 
-    주입된 키는 그 상태기계에 끼어들지 않습니다. 그래서 무언가 눌려 있는
-    동안에는 키보드 대신 그쪽으로 보냅니다. 재어 보니 주입을 끼워 넣어도
-    반복이 4ms 만에 이어졌습니다.
+    v4 부터는 수신기가 고리 키를 손이 쓰지 않는 다른 키보드 장치로 보냅니다.
+    윈도우가 반복을 장치마다 따로 돌리기 때문에 서로 빼앗지 않고, 그래서 이
+    우회가 필요 없습니다.
 
     마우스 버튼은 빼고 봅니다. 고리를 띄우고 있는 그 버튼이 늘 눌려 있기
     때문입니다."""
@@ -1755,6 +1761,7 @@ class KeyboardLink:
         self.vid = self.pid = 0
         self.version = 0
         self.last_version = 0
+        self.via = 0
 
     def open(self):
         if self.handle:
@@ -1825,8 +1832,6 @@ class KeyboardLink:
         if not self.open():
             return False
         ok, _ = self.ping(wait_ms=200)
-        if ok:
-            self.version = self.last_version
         return ok
 
     def chord(self, vks, hold_ms=BOARD_HOLD_MS):
@@ -1840,7 +1845,10 @@ class KeyboardLink:
             if code is None:
                 return False
             codes.append(code)
-        if not codes or len(codes) > 14:
+        # 수신기가 쥘 수 있는 만큼까지만. 넘치면 말없이 버려지는 대신
+        # False 를 돌려주어 SendInput 으로 떨어지게 합니다. 그쪽은 한도가
+        # 없어서 다 나갑니다.
+        if not codes or len(codes) > BOARD_HELD_MAX:
             return False
         head = bytearray([0x00, TH_CHORD, len(codes)])
         for code in codes:
@@ -1911,9 +1919,13 @@ class KeyboardLink:
                     break
                 answered = True
                 if buffer.raw[1] == TH_PING and buffer.raw[2]:
-                    self.last_version = buffer.raw[2]
-                    return True, "연결됨 (VID %04X PID %04X, 펌웨어 v%d)" % (
-                        vid, pid, buffer.raw[2])
+                    # 핑이 돌아올 때마다 갱신합니다. 이것이 없으면 펌웨어를
+                    # 다시 구운 뒤에도 프로그램을 껐다 켜야 반영됐습니다.
+                    self.last_version = self.version = buffer.raw[2]
+                    self.via = buffer.raw[3]
+                    return True, "연결됨 (VID %04X PID %04X, 펌웨어 v%d, %s)" % (
+                        vid, pid, buffer.raw[2], BOARD_VIA.get(
+                            buffer.raw[3], "장치 %d" % buffer.raw[3]))
             if answered:
                 # 키보드는 답했지만 수신기의 답이 아닙니다. VIA 가 모르는
                 # 명령에 제 나름대로 돌려준 것입니다.
