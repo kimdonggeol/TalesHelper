@@ -1779,6 +1779,11 @@ class KeyboardLink:
         프로그램이 끝나면 키보드가 그 키를 누른 채로 남습니다."""
         if self.handle:
             self._write(TH_RELEASE, 0)
+        self._drop()
+
+    def _drop(self):
+        """뗌을 보내지 않고 손잡이만 놓습니다."""
+        if self.handle:
             kernel32.CloseHandle(wintypes.HANDLE(self.handle))
         self.handle = None
 
@@ -1788,15 +1793,18 @@ class KeyboardLink:
         return head + bytes(BOARD_REPORT + 1 - len(head))
 
     def _send(self, report):
-        if not self.open():
-            return False
-        written = wintypes.DWORD()
-        if not kernel32.WriteFile(wintypes.HANDLE(self.handle), report,
-                                   len(report), ctypes.byref(written), None):
-            # 뽑혔거나 다시 구웠습니다. 다음 번에 새로 찾습니다.
-            self.close()
-            return False
-        return True
+        # 뽑혔다 꽂혔거나 다시 구웠으면 쥐고 있던 손잡이가 죽어 있습니다.
+        # 그 손잡이로는 뗌도 못 보내니 그냥 놓고, 새로 찾아 한 번 더 보냅니다.
+        # close() 로 놓으면 그 뗌이 다시 여기로 와서 끝없이 돕니다.
+        for _ in range(2):
+            if not self.open():
+                return False
+            written = wintypes.DWORD()
+            if kernel32.WriteFile(wintypes.HANDLE(self.handle), report,
+                                  len(report), ctypes.byref(written), None):
+                return True
+            self._drop()
+        return False
 
     def _write(self, command, code):
         return self._send(self._report(command, code))
