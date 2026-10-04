@@ -25,8 +25,10 @@
 #    define RAWKEY_HELD_MAX 10
 #endif
 
-/* 프로토콜 버전. 핑에 대한 답의 두 번째 바이트로 나갑니다. */
-#define RAWKEY_VERSION 0x03
+/* 프로토콜 버전. 핑에 대한 답의 두 번째 바이트로 나갑니다. 세 번째
+ * 바이트는 키를 칠 장치입니다 (0 같은 길, 1 6KRO, 2 NKRO).
+ * v4: 손가락이 쓰지 않는 쪽 키보드 장치로 칩니다. */
+#define RAWKEY_VERSION 0x04
 
 /* 받은 리포트가 rawkey 명령이면 처리하고 true, 아니면 건드리지 않고
  * false 를 돌려줍니다. */

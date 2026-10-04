@@ -1,4 +1,4 @@
-# rawkey v3 굽기
+# rawkey 굽기
 
 이 문서만 보고 진행할 수 있게 적었습니다. 앞뒤 맥락은 몰라도 됩니다.
 
@@ -8,17 +8,18 @@
 Vial 키보드 펌웨어에 넣어 다시 굽습니다. 이 저장소의 TalesHelper 가 그
 키보드에게 "이 키 눌러" 를 시키는 수신기입니다.
 
-**2026-10-04 에 v3 로 구웠습니다.** 되살리기는 기본으로 꺼져 있습니다.
+**2026-10-04 에 v4 로 구웠습니다.**
 
 | | 추가된 것 |
 |---|---|
 | v2 | `RAWKEY_CHORD (0x43)` — 키 여럿을 한 리포트 안에서 같이 누름 |
 | v3 | 키를 누른 채로도 키보드로 보냄. `rawkey_restore_repeat()` 는 `RAWKEY_RESTORE_REPEAT` 를 정의할 때만 |
+| v4 | 손가락이 쓰지 않는 쪽 키보드 장치(6KRO/NKRO)로 침. 핑 답 세 번째 바이트가 그 장치 |
 
 v3 부터 TalesHelper 는 누르고 있는 키가 있어도 `SendInput` 으로 우회하지
-않습니다. 되살리기를 켜면 눌려 있던 키의 뗌이 호스트에 한 번 보여 채널링
-스킬이 끊기는 것을 게임에서 확인했고, 끄면 반복형 스킬과 채널링 스킬이 모두
-이어졌습니다. 자세한 것은 `README.md` 의 "눌러 둔 키의 자동 반복".
+않습니다. v3 는 같은 장치로 쳐서 반복형 스킬과 채널링 스킬 중 하나가
+끊겼고, v4 에서 둘 다 이어지는 것을 게임에서 확인했습니다. 자세한 것은
+`README.md` 의 "눌러 둔 키의 자동 반복" 과 "v4".
 
 ## 대상
 
@@ -73,6 +74,13 @@ v3 에서 새로 쓰는 것들입니다. 깨지면 이 중 하나입니다.
 | `keyboard_report->nkro` / `KEYBOARD_REPORT_BITS` | 옛 QMK. `NKRO_REPORT_BITS` 가 없으면 이쪽으로 갑니다 |
 | `usb_device_state_get_protocol()` | 새 QMK. 옛 QMK 는 `keyboard_protocol` |
 | `KEYBOARD_REPORT_KEYS` | 6KRO 리포트의 키 칸 수 (보통 6) |
+| `host_keyboard_send` / `host_nkro_send` | v4. `host.h`. 장치별로 리포트를 직접 보냅니다 |
+| `add_key_bit` | v4. `report.h`. NKRO 리포트에 키 하나를 적습니다 |
+| `IS_QK_MODS` / `QK_MODS_GET_MODS` 등 | v4. `keycodes.h`, `quantum_keycodes.h` |
+
+v4 가 깨지는데 고치기 어려우면 `config.h` 에 `RAWKEY_SAME_DEVICE` 를 정의해
+v3 처럼 같은 장치로 치게 할 수 있습니다. 그 경우 반복형/채널링 스킬 중
+하나는 끊깁니다 (README 참고).
 
 **NKRO 분기를 들어내면 안 됩니다.** NKRO 가 켜져 있으면 눌린 키는 NKRO
 리포트에만 있고 6KRO 리포트는 비어 있어서, 빌드는 되지만 반복이 하나도
@@ -86,7 +94,7 @@ v3 에서 새로 쓰는 것들입니다. 깨지면 이 중 하나입니다.
 **1. 버전** — TalesHelper 설정 창 → **마우스** → `연결 확인`
 
 ```
-연결됨 (VID 4552 PID 0014, 펌웨어 v3)
+연결됨 (VID 4552 PID 0014, 펌웨어 v4)
 ```
 
 `v1` 이 그대로면 안 구워진 것이고, `수신기가 없습니다` 가 뜨면 `SRC +=
