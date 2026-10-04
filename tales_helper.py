@@ -1718,6 +1718,25 @@ def find_board():
     return None
 
 
+def any_key_held():
+    """지금 손가락이 누르고 있는 키가 있는지.
+
+    키보드로 보낸 키는 진짜 키라서 윈도우가 자동 반복을 거기로 옮겨 가고,
+    떼면 반복이 그냥 멈춥니다. 아직 눌려 있는 키로 돌아오지 않습니다. 키를
+    누른 채로 스킬이 나가고 있었다면 거기서 끊깁니다.
+
+    주입된 키는 그 상태기계에 끼어들지 않습니다. 그래서 무언가 눌려 있는
+    동안에는 키보드 대신 그쪽으로 보냅니다. 재어 보니 주입을 끼워 넣어도
+    반복이 4ms 만에 이어졌습니다.
+
+    마우스 버튼은 빼고 봅니다. 고리를 띄우고 있는 그 버튼이 늘 눌려 있기
+    때문입니다."""
+    for vk in range(0x07, 0x100):
+        if user32.GetAsyncKeyState(vk) & 0x8000:
+            return True
+    return False
+
+
 class KeyboardLink:
     """키를 보내는 대신, 키보드에게 그 키를 치라고 시킵니다.
 
@@ -4727,7 +4746,8 @@ class RadialMenuController(QObject):
         if not self._game_in_front():
             return
         keys = self.options().get("chord_keys") or list(DEFAULT_CHORD_KEYS)
-        if self.options().get("use_board") and self.board.chord(keys):
+        if (self.options().get("use_board") and not any_key_held()
+                and self.board.chord(keys)):
             return
         # 한 번의 SendInput 은 한 묶음으로 들어갑니다. 따로 보내면 게임이
         # 프레임 사이에서 끊어 볼 수 있습니다.
@@ -4824,10 +4844,10 @@ class RadialMenuController(QObject):
         if bound.get("action") == CHORD_ACTION:
             self._chord()
             return
-        # 키보드가 직접 치게 해 두었다면 그쪽으로. 키보드를 뽑았거나 보낼 수
-        # 없는 키라면 조용히 원래 길로 돌아갑니다.
-        if self.options().get("use_board") and self.board.tap(
-                bound["vk"], bound.get("mods", 0)):
+        # 키보드가 직접 치게 해 두었다면 그쪽으로. 키보드를 뽑았거나, 보낼
+        # 수 없는 키거나, 지금 누르고 있는 키가 있다면 원래 길로 갑니다.
+        if (self.options().get("use_board") and not any_key_held()
+                and self.board.tap(bound["vk"], bound.get("mods", 0))):
             return
         self._play(key_phases(bound["vk"], bound.get("mods", 0)))
 
