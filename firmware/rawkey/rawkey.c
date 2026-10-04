@@ -18,15 +18,24 @@
 #    define RAW_EPSIZE 32
 #endif
 
-/* 한 번에 하나만 눌러 둡니다. PC 가 뗌을 못 보내고 죽어도 다음 누름이
- * 앞의 것을 정리합니다. */
-static uint16_t rawkey_held = KC_NO;
+/* 눌러 둔 것들. PC 가 뗌을 못 보내고 죽어도 다음 누름이 앞의 것을
+ * 정리합니다. 여럿인 이유는 한 번에 같이 눌러야 하는 경우가 있어서입니다
+ * — 하나씩 보내면 앞의 것이 떨어져 마지막 하나만 남습니다. */
+static uint16_t rawkey_held[RAWKEY_HELD_MAX];
+static uint8_t  rawkey_held_count = 0;
 
 void rawkey_release(void) {
-    if (rawkey_held != KC_NO) {
-        unregister_code16(rawkey_held);
-        rawkey_held = KC_NO;
+    while (rawkey_held_count) {
+        unregister_code16(rawkey_held[--rawkey_held_count]);
     }
+}
+
+static void rawkey_hold(uint16_t code) {
+    if (code == KC_NO || rawkey_held_count >= RAWKEY_HELD_MAX) {
+        return;
+    }
+    register_code16(code);
+    rawkey_held[rawkey_held_count++] = code;
 }
 
 bool rawkey_receive(uint8_t *data, uint8_t length) {
@@ -38,18 +47,27 @@ bool rawkey_receive(uint8_t *data, uint8_t length) {
     switch (data[0]) {
         case RAWKEY_PRESS:
             rawkey_release();
-            if (code != KC_NO) {
-                register_code16(code);
-                rawkey_held = code;
-            }
+            rawkey_hold(code);
             return true;
 
-        case RAWKEY_RELEASE:
-            if (code == KC_NO || code == rawkey_held) {
-                rawkey_release();
-            } else {
-                unregister_code16(code);
+        case RAWKEY_CHORD: {
+            /* data[1] 이 개수, 그다음부터 키코드가 둘씩 이어집니다. 한
+             * 리포트 안에서 전부 눌러야 호스트에 한 번에 나갑니다. */
+            uint8_t count = data[1];
+            if (2 + count * 2 > length) {
+                return true;
             }
+            rawkey_release();
+            for (uint8_t i = 0; i < count; i++) {
+                rawkey_hold(data[2 + i * 2] | ((uint16_t)data[3 + i * 2] << 8));
+            }
+            return true;
+        }
+
+        case RAWKEY_RELEASE:
+            /* 우리가 누른 것만 쥐고 있으므로, 하나를 집어 떼든 통째로
+             * 떼든 결과가 같습니다. */
+            rawkey_release();
             return true;
 
         case RAWKEY_PING: {

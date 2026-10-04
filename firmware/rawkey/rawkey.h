@@ -16,13 +16,21 @@
 #ifndef RAWKEY_PING
 #    define RAWKEY_PING 0x42
 #endif
+#ifndef RAWKEY_CHORD
+#    define RAWKEY_CHORD 0x43
+#endif
+
+/* 한꺼번에 잡고 있을 수 있는 키 수. HID 리포트가 담는 만큼이면 됩니다. */
+#ifndef RAWKEY_HELD_MAX
+#    define RAWKEY_HELD_MAX 10
+#endif
 
 /* 프로토콜 버전. 핑에 대한 답의 두 번째 바이트로 나갑니다. */
-#define RAWKEY_VERSION 0x01
+#define RAWKEY_VERSION 0x02
 
 /* 받은 리포트가 rawkey 명령이면 처리하고 true, 아니면 건드리지 않고
  * false 를 돌려줍니다. */
 bool rawkey_receive(uint8_t *data, uint8_t length);
 
-/* 눌러 둔 키가 있으면 뗍니다. */
+/* 눌러 둔 키가 있으면 전부 뗍니다. */
 void rawkey_release(void);

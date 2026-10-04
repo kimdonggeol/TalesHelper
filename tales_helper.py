@@ -193,7 +193,13 @@ DEFAULT_PROFILE_HOTKEY = {"mods": MOD_CONTROL, "vk": 0x7A, "text": "Ctrl+F11"}
 # The game runs as administrator, and Windows will not let a program of lower
 # privilege take a button away from it or send it a key, so this only works
 # when TalesHelper is elevated too.
+# 마인: 고리의 한 칸에 키 대신 걸 수 있는 동작입니다. 아래 칸들을 한꺼번에
+# 누릅니다. 기본은 F6 부터 F12 까지.
+CHORD_ACTION = "chord"
+DEFAULT_CHORD_KEYS = tuple(range(0x75, 0x7C))
+
 DEFAULT_RADIAL = {"enabled": False, "use_board": True,
+                   "chord_keys": list(DEFAULT_CHORD_KEYS),
                    "button": 1, "hold_ms": 200,
                    "radius": 130, "dead_zone": 34, "keys": {}}
 # A profile is a set of PIPs inside one preset — typically one per character,
@@ -369,6 +375,16 @@ def hotkey_text(mods, key):
         parts.append("Win")
     parts.append(QKeySequence(key).toString() or "?")
     return "+".join(parts)
+
+
+def vk_text(vk):
+    """가상 키 하나를 읽을 수 있는 이름으로. hotkey_text 는 Qt 의 키 번호를
+    받으므로 가상 키를 그대로 넣으면 엉뚱한 글자가 나옵니다."""
+    if VK_F1 <= vk <= VK_F1 + 23:
+        return "F%d" % (vk - VK_F1 + 1)
+    if 0x30 <= vk <= 0x5A:
+        return chr(vk)
+    return "VK 0x%02X" % vk
 
 
 def normalize_hotkey(value, require_mods=True):
@@ -941,6 +957,9 @@ def normalize_radial(raw):
         return out
     out["enabled"] = bool(raw.get("enabled", False))
     out["use_board"] = bool(raw.get("use_board", True))
+    keys = [vk for vk in (raw.get("chord_keys") or ())
+             if isinstance(vk, int) and 0 < vk < 0x100]
+    out["chord_keys"] = keys[:14] or list(DEFAULT_CHORD_KEYS)
     if raw.get("button") in BUTTON_NAMES:
         out["button"] = raw["button"]
     for key, low, high in (("hold_ms", 60, 2000), ("radius", 60, 400),
@@ -951,7 +970,10 @@ def normalize_radial(raw):
     for name, hotkey in (raw.get("keys") or {}).items():
         if name not in RADIAL_LABELS:
             continue
-        bound = normalize_hotkey(hotkey, require_mods=False)
+        if isinstance(hotkey, dict) and hotkey.get("action") == CHORD_ACTION:
+            bound = {"action": CHORD_ACTION, "text": "마인"}
+        else:
+            bound = normalize_hotkey(hotkey, require_mods=False)
         if not bound:
             continue
         # What to call it in the ring, when the key itself is not the point.
@@ -1574,7 +1596,8 @@ def direction_at(centre, point, dead_zone):
 # QMK 가 로우 HID 인터페이스에 쓰는 usage. Vial 도 같은 자리를 씁니다.
 RAW_USAGE_PAGE, RAW_USAGE = 0xFF60, 0x61
 BOARD_REPORT = 32                 # QMK 의 RAW_EPSIZE
-TH_PRESS, TH_RELEASE, TH_PING = 0x40, 0x41, 0x42
+TH_PRESS, TH_RELEASE, TH_PING, TH_CHORD = 0x40, 0x41, 0x42, 0x43
+BOARD_CHORD_VERSION = 2          # 코드를 아는 수신기부터
 BOARD_HOLD_MS = 40                # 한 프레임에 한 번 읽는 게임도 보도록
 
 RIDI_DEVICENAME = 0x20000007
@@ -1710,6 +1733,8 @@ class KeyboardLink:
         self.handle = None
         self.path = None
         self.vid = self.pid = 0
+        self.version = 0
+        self.last_version = 0
 
     def open(self):
         if self.handle:
@@ -1742,11 +1767,10 @@ class KeyboardLink:
         head = bytes([0x00, command, code & 0xFF, (code >> 8) & 0xFF])
         return head + bytes(BOARD_REPORT + 1 - len(head))
 
-    def _write(self, command, code):
+    def _send(self, report):
         if not self.open():
             return False
         written = wintypes.DWORD()
-        report = self._report(command, code)
         if not kernel32.WriteFile(wintypes.HANDLE(self.handle), report,
                                    len(report), ctypes.byref(written), None):
             # 뽑혔거나 다시 구웠습니다. 다음 번에 새로 찾습니다.
@@ -1754,12 +1778,49 @@ class KeyboardLink:
             return False
         return True
 
+    def _write(self, command, code):
+        return self._send(self._report(command, code))
+
     def tap(self, vk, mods, hold_ms=BOARD_HOLD_MS):
         """키보드가 그 키를 눌렀다 떼게 합니다. 못 보내면 False."""
         code = qmk_keycode(vk, mods)
         if code is None or not self._write(TH_PRESS, code):
             return False
         QTimer.singleShot(hold_ms, lambda: self._write(TH_RELEASE, code))
+        return True
+
+
+    def probe(self):
+        """손잡이를 열고 수신기 버전을 받아 둡니다. 키를 보낼 때마다 묻지
+        않도록 미리 해 둡니다."""
+        self.version = 0
+        if not self.open():
+            return False
+        ok, _ = self.ping(wait_ms=200)
+        if ok:
+            self.version = self.last_version
+        return ok
+
+    def chord(self, vks, hold_ms=BOARD_HOLD_MS):
+        """키 여럿을 한 리포트 안에서 같이 누릅니다. 하나씩 보내면 수신기가
+        앞의 것을 떼고 마지막 하나만 남습니다."""
+        if self.version < 2:
+            return False
+        codes = []
+        for vk in vks:
+            code = qmk_keycode(vk, 0)
+            if code is None:
+                return False
+            codes.append(code)
+        if not codes or len(codes) > 14:
+            return False
+        head = bytearray([0x00, TH_CHORD, len(codes)])
+        for code in codes:
+            head += bytes([code & 0xFF, (code >> 8) & 0xFF])
+        head += bytes(BOARD_REPORT + 1 - len(head))
+        if not self._send(bytes(head)):
+            return False
+        QTimer.singleShot(hold_ms, lambda: self._write(TH_RELEASE, 0))
         return True
 
     @staticmethod
@@ -1822,6 +1883,7 @@ class KeyboardLink:
                     break
                 answered = True
                 if buffer.raw[1] == TH_PING and buffer.raw[2]:
+                    self.last_version = buffer.raw[2]
                     return True, "연결됨 (VID %04X PID %04X, 펌웨어 v%d)" % (
                         vid, pid, buffer.raw[2])
             if answered:
@@ -2836,9 +2898,14 @@ class SettingsDialog(QDialog):
         self.lbl_radial_slot = QLabel(RADIAL_LABELS["n"])
         self.lbl_radial_slot.setObjectName("SectionTitle")
         slot_box.addWidget(self.lbl_radial_slot)
-        cap_key = QLabel("보낼 키")
-        cap_key.setObjectName("Caption")
-        slot_box.addWidget(cap_key)
+        self.combo_radial_kind = QComboBox()
+        self.combo_radial_kind.addItem("키 보내기", "key")
+        self.combo_radial_kind.addItem("마인", CHORD_ACTION)
+        self.combo_radial_kind.currentIndexChanged.connect(self._commit_radial_kind)
+        slot_box.addWidget(self.combo_radial_kind)
+        self.cap_radial_key = QLabel("보낼 키")
+        self.cap_radial_key.setObjectName("Caption")
+        slot_box.addWidget(self.cap_radial_key)
         self.radial_key = HotkeyEdit(require_mods=False, empty_text="-")
         self.radial_key.captured.connect(
             lambda key: self._commit_radial_key(self.radial_slot, key))
@@ -2852,6 +2919,11 @@ class SettingsDialog(QDialog):
         self.radial_name.editingFinished.connect(
             lambda: self._commit_radial_label(self.radial_slot))
         slot_box.addWidget(self.radial_name)
+        self.lbl_chord = QLabel("")
+        self.lbl_chord.setObjectName("Caption")
+        self.lbl_chord.setWordWrap(True)
+        self.lbl_chord.hide()
+        slot_box.addWidget(self.lbl_chord)
         hint_keys = QLabel("고리에서 한 칸을 누르고 그 칸에 보낼 키를 입력하세요. "
                             "가운데로 두고 버튼을 떼면 아무것도 보내지 않고 닫힙니다. "
                             "Ctrl / Shift / Alt 조합도 되고, Del 로 비웁니다.")
@@ -3603,7 +3675,7 @@ class SettingsDialog(QDialog):
         live = elevated and options.get("enabled")
         for widget in (self.combo_radial_button, self.spin_radial_hold,
                         self.radial_pick, self.radial_key, self.radial_name,
-                        self.chk_board):
+                        self.chk_board, self.combo_radial_kind):
             widget.setEnabled(bool(live))
         self.lbl_board.setText("" if not options.get("use_board")
                                 else "`연결 확인` 으로 지금 상태를 볼 수 있습니다. "
@@ -3638,9 +3710,39 @@ class SettingsDialog(QDialog):
         self.radial_pick.select(self.radial_slot)
         bound = (options.get("keys") or {}).get(self.radial_slot)
         self.lbl_radial_slot.setText(RADIAL_LABELS[self.radial_slot])
-        self.radial_key.set_value(bound)
+        chord = (bound or {}).get("action") == CHORD_ACTION
+        self.combo_radial_kind.setCurrentIndex(1 if chord else 0)
+        self.radial_key.set_value(None if chord else bound)
+        self.radial_key.setVisible(not chord)
+        self.cap_radial_key.setVisible(not chord)
         self.radial_key.setToolTip(RADIAL_LABELS[self.radial_slot] + " — 보낼 키")
         self.radial_name.setText((bound or {}).get("label", ""))
+        self.lbl_chord.setVisible(chord)
+        if chord:
+            keys = options.get("chord_keys") or list(DEFAULT_CHORD_KEYS)
+            self.lbl_chord.setText(
+                "이 칸을 고르면 " + ", ".join(vk_text(vk) for vk in keys)
+                + " 를 한꺼번에 누릅니다. "
+                + f"{TARGET_LABEL} 창이 맨 앞에 있을 때만 나갑니다.")
+
+    def _commit_radial_kind(self, _index):
+        if self._loading:
+            return
+        keys = self._radial_options().setdefault("keys", {})
+        if self.combo_radial_kind.currentData() == CHORD_ACTION:
+            label = (keys.get(self.radial_slot) or {}).get("label")
+            keys[self.radial_slot] = {"action": CHORD_ACTION, "text": "마인"}
+            if label:
+                keys[self.radial_slot]["label"] = label
+        else:
+            # 키를 다시 고르기 전까지는 빈 칸입니다.
+            keys.pop(self.radial_slot, None)
+        save_config(self.controller.config)
+        self._loading += 1
+        try:
+            self._show_radial_slot()
+        finally:
+            self._loading -= 1
 
     def _pick_radial_slot(self, name):
         self.radial_slot = name
@@ -4351,6 +4453,8 @@ class RadialMenuController(QObject):
         """Put the hook in place, or take it away, to match the settings."""
         if self.wanted():
             self.hook.start()
+            if self.options().get("use_board"):
+                self.board.probe()
         else:
             self._cancel()
             self.hook.stop()
@@ -4360,6 +4464,30 @@ class RadialMenuController(QObject):
         self._cancel()
         self.hook.stop()
         self.board.close()
+
+
+    def _game_in_front(self):
+        hwnd = self.controller.target_hwnd
+        front = user32.GetForegroundWindow()
+        return bool(hwnd and front
+                     and pid_of_window(front) == pid_of_window(hwnd))
+
+    def _chord(self):
+        """고른 칸에 걸린 키들을 한꺼번에 누릅니다.
+
+        누를 때 게임이 앞에 있었더라도 떼는 사이에 창이 바뀔 수 있어서,
+        보내기 직전에 한 번 더 봅니다."""
+        if not self._game_in_front():
+            return
+        keys = self.options().get("chord_keys") or list(DEFAULT_CHORD_KEYS)
+        if self.options().get("use_board") and self.board.chord(keys):
+            return
+        # 한 번의 SendInput 은 한 묶음으로 들어갑니다. 따로 보내면 게임이
+        # 프레임 사이에서 끊어 볼 수 있습니다.
+        send_input([key_event(vk, False) for vk in keys])
+        QTimer.singleShot(
+            BOARD_HOLD_MS,
+            lambda: send_input([key_event(vk, True) for vk in reversed(keys)]))
 
     def _game_is_ours(self, at):
         """Only take the button while the game is the window being used and
@@ -4375,9 +4503,7 @@ class RadialMenuController(QObject):
         The focus is still needed as well, because a key goes to whatever has
         it - pressing over an unfocused game would put the key in whatever
         window the user was actually typing into."""
-        hwnd = self.controller.target_hwnd
-        front = user32.GetForegroundWindow()
-        if not (hwnd and front and pid_of_window(front) == pid_of_window(hwnd)):
+        if not self._game_in_front():
             return False
         under = window_at(at)
         if not under:
@@ -4446,6 +4572,9 @@ class RadialMenuController(QObject):
             return
         bound = (self.options().get("keys") or {}).get(direction)
         if not bound:
+            return
+        if bound.get("action") == CHORD_ACTION:
+            self._chord()
             return
         # 키보드가 직접 치게 해 두었다면 그쪽으로. 키보드를 뽑았거나 보낼 수
         # 없는 키라면 조용히 원래 길로 돌아갑니다.
