@@ -13,6 +13,9 @@
 #include "raw_hid.h"
 #include "rawkey.h"
 #include "action_util.h"
+#if defined(NKRO_ENABLE) && defined(NKRO_REPORT_BITS)
+#    include "usb_device_state.h"
+#endif
 
 /* 옛 QMK(지금의 vial-qmk 포함)는 raw_hid.h 에 RAW_EPSIZE 가 없습니다. */
 #ifndef RAW_EPSIZE
@@ -55,12 +58,23 @@ void rawkey_restore_repeat(void) {
     uint8_t count = 0;
 
 #if defined(NKRO_ENABLE)
-    if (keymap_config.nkro) {
-        for (uint16_t bit = 0; bit < KEYBOARD_REPORT_BITS * 8; bit++) {
+    /* add_key() 가 NKRO 리포트에 넣는 조건과 같아야 키가 실제로 담긴 쪽을
+     * 읽습니다. 새 QMK(지금의 vial-qmk 포함)는 NKRO 가 따로 nkro_report 에
+     * 담기고, 옛 QMK 는 keyboard_report 안의 nkro 에 담깁니다. */
+#    if defined(NKRO_REPORT_BITS)
+    if (usb_device_state_get_protocol() == USB_PROTOCOL_REPORT && keymap_config.nkro) {
+        uint8_t *bits = nkro_report->bits;
+        uint16_t nbits = NKRO_REPORT_BITS * 8;
+#    else
+    if (keyboard_protocol && keymap_config.nkro) {
+        uint8_t *bits = keyboard_report->nkro.bits;
+        uint16_t nbits = KEYBOARD_REPORT_BITS * 8;
+#    endif
+        for (uint16_t bit = 0; bit < nbits; bit++) {
             if (count >= RAWKEY_HELD_MAX) {
                 break;
             }
-            if (keyboard_report->nkro.bits[bit / 8] & (1 << (bit % 8))) {
+            if (bits[bit / 8] & (1 << (bit % 8))) {
                 held[count++] = (uint8_t)bit;
             }
         }

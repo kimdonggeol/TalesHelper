@@ -67,11 +67,14 @@ v3 에서 새로 쓰는 것들입니다. 깨지면 이 중 하나입니다.
 | `keyboard_report` | `action_util.h` 의 `extern report_keyboard_t *keyboard_report;` |
 | `add_key` / `del_key` / `send_keyboard_report` | 같은 헤더 |
 | `keymap_config.nkro` | `eeconfig.h`. `NKRO_ENABLE` 일 때만 씁니다 |
-| `KEYBOARD_REPORT_BITS` | NKRO 비트 수. 이름이 다르면 `#if defined` 블록째 지워도 됩니다 |
+| `nkro_report` / `NKRO_REPORT_BITS` | 새 QMK(이 vial-qmk 포함). NKRO 가 `keyboard_report` 와 따로 담깁니다 |
+| `keyboard_report->nkro` / `KEYBOARD_REPORT_BITS` | 옛 QMK. `NKRO_REPORT_BITS` 가 없으면 이쪽으로 갑니다 |
+| `usb_device_state_get_protocol()` | 새 QMK. 옛 QMK 는 `keyboard_protocol` |
 | `KEYBOARD_REPORT_KEYS` | 6KRO 리포트의 키 칸 수 (보통 6) |
 
-NKRO 분기를 통째로 들어내도 동작합니다. 그 경우 6KRO 경로만 남고, 리포트에
-들어가는 키 여섯 개까지만 반복이 되살아납니다. 실사용에는 충분합니다.
+**NKRO 분기를 들어내면 안 됩니다.** NKRO 가 켜져 있으면 눌린 키는 NKRO
+리포트에만 있고 6KRO 리포트는 비어 있어서, 빌드는 되지만 반복이 하나도
+되살아나지 않습니다.
 
 **고친 내용은 저장소 쪽 파일에도 그대로 반영해 주세요.** 안 그러면 다음에
 또 같은 데서 깨집니다.
@@ -102,12 +105,19 @@ rawkey.c` 가 빠졌거나 `raw_hid_receive_kb` 가 두 번 정의된 것입니�
  7.773  I   뗌     VID 4552
  7.774  1   뗌     VID 4552      ← v3 가 되살리는 한 쌍
  7.775  1   누름   VID 4552
- 7.79   1   누름   VID 4552      ← 반복이 다시 이어짐
- 7.81   1   누름   VID 4552
+                                 ← 재입력 지연만큼 공백 (최소 약 0.25초)
+ 8.03   1   누름   VID 4552      ← 반복이 다시 이어짐
+ 8.06   1   누름   VID 4552
 ```
 
+되살린 누름은 윈도우가 새 누름으로 보므로, 반복은 제어판 → 키보드 →
+`재입력 시간` 만큼 기다린 뒤에 다시 시작합니다. 그 공백에 스킬이 끊기면 이
+지연 때문입니다.
+
 `1 뗌` / `1 누름` 한 쌍이 없고 그 뒤 반복도 없으면 `rawkey_restore_repeat()`
-가 안 불린 것입니다.
+가 안 불린 것입니다. 한 쌍 직후 스킬이 다시 시전되거나 끊기면 게임이 그
+`뗌` 을 본 것이니, `RAWKEY_RELEASE` 에서 `rawkey_restore_repeat()` 호출을
+빼는 쪽이 낫습니다.
 
 ## 겸사겸사 (선택)
 
