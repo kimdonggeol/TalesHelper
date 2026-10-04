@@ -1598,6 +1598,7 @@ RAW_USAGE_PAGE, RAW_USAGE = 0xFF60, 0x61
 BOARD_REPORT = 32                 # QMK 의 RAW_EPSIZE
 TH_PRESS, TH_RELEASE, TH_PING, TH_CHORD = 0x40, 0x41, 0x42, 0x43
 BOARD_CHORD_VERSION = 2          # 코드를 아는 수신기부터
+BOARD_REPEAT_VERSION = 3         # 자동 반복을 되살려 주는 수신기부터
 BOARD_HOLD_MS = 40                # 한 프레임에 한 번 읽는 게임도 보도록
 
 RIDI_DEVICENAME = 0x20000007
@@ -4732,6 +4733,14 @@ class RadialMenuController(QObject):
         self.board.close()
 
 
+    def _board_takes_it(self):
+        """키보드에게 맡길지. 수신기가 자동 반복을 되살릴 줄 알면 언제든
+        맡기고, 그 전 버전이면 누르고 있는 키가 있을 때만 피합니다."""
+        if not self.options().get("use_board"):
+            return False
+        return (self.board.version >= BOARD_REPEAT_VERSION
+                 or not any_key_held())
+
     def _game_in_front(self):
         hwnd = self.controller.target_hwnd
         front = user32.GetForegroundWindow()
@@ -4746,8 +4755,7 @@ class RadialMenuController(QObject):
         if not self._game_in_front():
             return
         keys = self.options().get("chord_keys") or list(DEFAULT_CHORD_KEYS)
-        if (self.options().get("use_board") and not any_key_held()
-                and self.board.chord(keys)):
+        if self._board_takes_it() and self.board.chord(keys):
             return
         # 한 번의 SendInput 은 한 묶음으로 들어갑니다. 따로 보내면 게임이
         # 프레임 사이에서 끊어 볼 수 있습니다.
@@ -4846,8 +4854,8 @@ class RadialMenuController(QObject):
             return
         # 키보드가 직접 치게 해 두었다면 그쪽으로. 키보드를 뽑았거나, 보낼
         # 수 없는 키거나, 지금 누르고 있는 키가 있다면 원래 길로 갑니다.
-        if (self.options().get("use_board") and not any_key_held()
-                and self.board.tap(bound["vk"], bound.get("mods", 0))):
+        if self._board_takes_it() and self.board.tap(
+                bound["vk"], bound.get("mods", 0)):
             return
         self._play(key_phases(bound["vk"], bound.get("mods", 0)))
 
