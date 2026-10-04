@@ -193,7 +193,7 @@ DEFAULT_PROFILE_HOTKEY = {"mods": MOD_CONTROL, "vk": 0x7A, "text": "Ctrl+F11"}
 # The game runs as administrator, and Windows will not let a program of lower
 # privilege take a button away from it or send it a key, so this only works
 # when TalesHelper is elevated too.
-DEFAULT_RADIAL = {"enabled": False, "use_board": False,
+DEFAULT_RADIAL = {"enabled": False, "use_board": True,
                    "button": 1, "hold_ms": 200,
                    "radius": 130, "dead_zone": 34, "keys": {}}
 # A profile is a set of PIPs inside one preset — typically one per character,
@@ -940,7 +940,7 @@ def normalize_radial(raw):
     if not isinstance(raw, dict):
         return out
     out["enabled"] = bool(raw.get("enabled", False))
-    out["use_board"] = bool(raw.get("use_board", False))
+    out["use_board"] = bool(raw.get("use_board", True))
     if raw.get("button") in BUTTON_NAMES:
         out["button"] = raw["button"]
     for key, low, high in (("hold_ms", 60, 2000), ("radius", 60, 400),
@@ -1730,7 +1730,10 @@ class KeyboardLink:
         return True
 
     def close(self):
+        """손잡이를 놓기 전에 눌러 둔 키가 있으면 뗍니다. 누름과 뗌 사이에
+        프로그램이 끝나면 키보드가 그 키를 누른 채로 남습니다."""
         if self.handle:
+            self._write(TH_RELEASE, 0)
             kernel32.CloseHandle(wintypes.HANDLE(self.handle))
         self.handle = None
 
@@ -3603,7 +3606,9 @@ class SettingsDialog(QDialog):
                         self.chk_board):
             widget.setEnabled(bool(live))
         self.lbl_board.setText("" if not options.get("use_board")
-                                else "`연결 확인` 으로 상태를 볼 수 있습니다.")
+                                else "`연결 확인` 으로 지금 상태를 볼 수 있습니다. "
+                                      "키보드가 없으면 알아서 원래 방식으로 "
+                                      "보냅니다.")
         if not elevated:
             self.lbl_radial_admin.setText(
                 "게임이 관리자 권한으로 실행되기 때문에, 이 기능을 쓰려면 "
