@@ -4505,6 +4505,7 @@ class RadialMenuController(QObject):
         window the user was actually typing into."""
         if not self._game_in_front():
             return False
+        hwnd = self.controller.target_hwnd
         under = window_at(at)
         if not under:
             return False
