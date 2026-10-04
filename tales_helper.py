@@ -203,7 +203,7 @@ DEFAULT_CHORD_KEYS = tuple(range(0x75, 0x7C))
 DEFAULT_MINE = {"enabled": False, "button": 2,
                  "keys": list(DEFAULT_CHORD_KEYS)}
 
-DEFAULT_RADIAL = {"enabled": False,
+DEFAULT_RADIAL = {"enabled": False, "tap_key": None,
                    "button": 1, "hold_ms": 200,
                    "radius": 130, "dead_zone": 34, "keys": {}}
 # A profile is a set of PIPs inside one preset — typically one per character,
@@ -978,6 +978,8 @@ def normalize_radial(raw):
     if not isinstance(raw, dict):
         return out
     out["enabled"] = bool(raw.get("enabled", False))
+    # 짧게 눌렀을 때 원래 클릭 대신 보낼 키. 비어 있으면 원래대로입니다.
+    out["tap_key"] = normalize_hotkey(raw.get("tap_key"), require_mods=False)
     if raw.get("button") in BUTTON_NAMES:
         out["button"] = raw["button"]
     for key, low, high in (("hold_ms", 60, 2000), ("radius", 60, 400),
@@ -1621,12 +1623,14 @@ def direction_at(centre, point, dead_zone):
 RAW_USAGE_PAGE, RAW_USAGE = 0xFF60, 0x61
 BOARD_REPORT = 32                 # QMK 의 RAW_EPSIZE
 TH_PRESS, TH_RELEASE, TH_PING, TH_CHORD = 0x40, 0x41, 0x42, 0x43
-# 수신기가 다음 키를 어느 키보드 장치로 칠지. 손으로 치는 키와 다른 장치로
-# 나가야 윈도우가 자동 반복을 서로 빼앗지 않습니다.
 BOARD_VIA = {0: "같은 장치", 1: "6KRO 쪽", 2: "NKRO 쪽"}
 BOARD_CHORD_VERSION = 2          # 코드를 아는 수신기부터
 BOARD_REPEAT_VERSION = 3         # 누른 채로도 맡겨도 되는 수신기부터
 BOARD_HELD_MAX = 10              # 수신기의 RAWKEY_HELD_MAX 와 같아야 합니다
+BOARD_6KRO_KEYS = 6              # 6KRO 리포트가 담는 칸 수
+# 수신기가 다음 키를 어느 키보드 장치로 칠지. 손이 쓰는 쪽과 다른 장치로
+# 나가야 윈도우가 자동 반복을 서로 빼앗지 않습니다.
+VIA_SAME, VIA_6KRO, VIA_NKRO = 0, 1, 2
 BOARD_HOLD_MS = 40                # 한 프레임에 한 번 읽는 게임도 보도록
 
 RIDI_DEVICENAME = 0x20000007
@@ -1858,6 +1862,10 @@ class KeyboardLink:
         ok, _ = self.ping(wait_ms=200)
         return ok
 
+    def _room(self):
+        """한 리포트에 들어가는 칸 수. 마지막 핑이 알려 준 장치 기준입니다."""
+        return BOARD_HELD_MAX if self.via == VIA_NKRO else BOARD_6KRO_KEYS
+
     def chord(self, vks, hold_ms=BOARD_HOLD_MS):
         """키 여럿을 한 리포트 안에서 같이 누릅니다. 하나씩 보내면 수신기가
         앞의 것을 떼고 마지막 하나만 남습니다."""
@@ -1869,10 +1877,14 @@ class KeyboardLink:
             if code is None:
                 return False
             codes.append(code)
-        # 수신기가 쥘 수 있는 만큼까지만. 넘치면 말없이 버려지는 대신
+        # 수신기가 담을 수 있는 만큼까지만. 넘치면 말없이 버려지는 대신
         # False 를 돌려주어 SendInput 으로 떨어지게 합니다. 그쪽은 한도가
         # 없어서 다 나갑니다.
-        if not codes or len(codes) > BOARD_HELD_MAX:
+        #
+        # 6KRO 리포트는 여섯 칸뿐입니다. 수신기는 손이 쓰지 않는 장치를
+        # 고르는데, 키보드에서 NKRO 를 켜 두면 그 반대쪽이 6KRO 가 되어
+        # 일곱 번째 키가 조용히 잘립니다.
+        if not codes or len(codes) > self._room():
             return False
         head = bytearray([0x00, TH_CHORD, len(codes)])
         for code in codes:
@@ -3160,6 +3172,22 @@ class SettingsDialog(QDialog):
         hold_row.addStretch()
         radial_layout.addLayout(hold_row)
 
+        cap_tap = QLabel("그 전에 떼면 (짧게 누르면)")
+        cap_tap.setObjectName("Caption")
+        radial_layout.addWidget(cap_tap)
+        self.radial_tap = HotkeyEdit(require_mods=False,
+                                      empty_text="원래 동작 그대로")
+        self.radial_tap.captured.connect(self._commit_radial_tap)
+        radial_layout.addWidget(self.radial_tap)
+        hint_tap = QLabel(
+            f"비워 두면 그 버튼의 원래 동작이 그대로 나갑니다. 키를 걸면 그 "
+            f"키가 대신 나가고, 원래 동작은 안 나갑니다. {TARGET_LABEL} 창을 "
+            "쓰는 동안에만 바뀌고 다른 프로그램에서는 원래대로입니다. "
+            "Del 로 비웁니다.")
+        hint_tap.setObjectName("Caption")
+        hint_tap.setWordWrap(True)
+        radial_layout.addWidget(hint_tap)
+
         self.radial_slot = "n"
         keys_row = QHBoxLayout()
         keys_row.setSpacing(18)
@@ -4087,12 +4115,14 @@ class SettingsDialog(QDialog):
             index = self.combo_radial_button.findData(options.get("button", 1))
             self.combo_radial_button.setCurrentIndex(max(0, index))
             self.spin_radial_hold.setValue(int(options.get("hold_ms", 200)))
+            self.radial_tap.set_value(options.get("tap_key"))
             self._show_radial_slot()
         finally:
             self._loading -= 1
         live = elevated and options.get("enabled")
         for widget in (self.combo_radial_button, self.spin_radial_hold,
-                        self.radial_pick, self.radial_key, self.radial_name):
+                        self.radial_tap, self.radial_pick, self.radial_key,
+                        self.radial_name):
             widget.setEnabled(bool(live))
 
         if not elevated:
@@ -4192,6 +4222,18 @@ class SettingsDialog(QDialog):
             return
         self._radial_options()["button"] = which
         save_config(self.controller.config)
+
+    def _commit_radial_tap(self, hotkey):
+        if self._loading:
+            return
+        self._radial_options()["tap_key"] = normalize_hotkey(
+            hotkey, require_mods=False)
+        save_config(self.controller.config)
+        self._loading += 1
+        try:
+            self.radial_tap.set_value(self._radial_options()["tap_key"])
+        finally:
+            self._loading -= 1
 
     def _commit_radial_hold(self, value):
         if self._loading:
@@ -4982,7 +5024,14 @@ class RadialMenuController(QObject):
                                    int(self.options().get("dead_zone", 34)))
             QTimer.singleShot(0, lambda: self._choose(chosen))
         else:
-            QTimer.singleShot(0, lambda: send_input(button_click(button)))
+            # 짧게 누른 것입니다. 보낼 키를 걸어 두었으면 그 키가 원래
+            # 클릭을 대신합니다. 훅이 그 버튼을 가져오는 것은 게임이 앞에
+            # 있을 때뿐이므로, 다른 프로그램에서는 원래대로 동작합니다.
+            tap = self.options().get("tap_key")
+            if tap:
+                QTimer.singleShot(0, lambda: self._send_key(tap))
+            else:
+                QTimer.singleShot(0, lambda: send_input(button_click(button)))
         return True
 
     def _open(self):
@@ -5016,8 +5065,11 @@ class RadialMenuController(QObject):
         bound = (self.options().get("keys") or {}).get(direction)
         if not bound:
             return
-        # 키보드가 직접 치게 해 두었다면 그쪽으로. 키보드를 뽑았거나, 보낼
-        # 수 없는 키거나, 지금 누르고 있는 키가 있다면 원래 길로 갑니다.
+        self._send_key(bound)
+
+    def _send_key(self, bound):
+        """키보드가 직접 치게 해 두었다면 그쪽으로. 키보드를 뽑았거나, 보낼
+        수 없는 키거나, 지금 누르고 있는 키가 있다면 원래 길로 갑니다."""
         if self._board_takes_it() and self.board.tap(
                 bound["vk"], bound.get("mods", 0)):
             return
