@@ -1598,7 +1598,7 @@ RAW_USAGE_PAGE, RAW_USAGE = 0xFF60, 0x61
 BOARD_REPORT = 32                 # QMK 의 RAW_EPSIZE
 TH_PRESS, TH_RELEASE, TH_PING, TH_CHORD = 0x40, 0x41, 0x42, 0x43
 BOARD_CHORD_VERSION = 2          # 코드를 아는 수신기부터
-BOARD_REPEAT_VERSION = 3         # 자동 반복을 되살려 주는 수신기부터
+BOARD_REPEAT_VERSION = 3         # 누른 채로도 맡겨도 되는 수신기부터
 BOARD_HOLD_MS = 40                # 한 프레임에 한 번 읽는 게임도 보도록
 
 RIDI_DEVICENAME = 0x20000007
@@ -4742,8 +4742,9 @@ class RadialMenuController(QObject):
 
 
     def _board_takes_it(self):
-        """키보드에게 맡길지. 수신기가 자동 반복을 되살릴 줄 알면 언제든
-        맡기고, 그 전 버전이면 누르고 있는 키가 있을 때만 피합니다."""
+        """키보드에게 맡길지. v3 수신기면 언제든 맡기고, 그 전 버전이면
+        누르고 있는 키가 있을 때만 피합니다. 누른 채로 키보드가 키를 쳐도
+        그 키의 반복만 멈출 뿐 게임의 스킬은 끊기지 않는 것을 확인했습니다."""
         if not self.options().get("use_board"):
             return False
         return (self.board.version >= BOARD_REPEAT_VERSION

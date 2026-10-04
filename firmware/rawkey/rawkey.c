@@ -134,7 +134,13 @@ bool rawkey_receive(uint8_t *data, uint8_t length) {
             /* 우리가 누른 것만 쥐고 있으므로, 하나를 집어 떼든 통째로
              * 떼든 결과가 같습니다. */
             rawkey_release();
+#ifdef RAWKEY_RESTORE_REPEAT
+            /* 기본으로는 하지 않습니다. 되살리느라 호스트에 그 키의 뗌이 한
+             * 번 보이는데, 누르고 있는 동안만 이어지는 채널링 스킬은 그
+             * 뗌에서 끊깁니다. 반복으로 나가는 스킬도 되살리지 않아도
+             * 끊기지 않는 것을 게임에서 확인했습니다. */
             rawkey_restore_repeat();
+#endif
             return true;
 
         case RAWKEY_PING: {
