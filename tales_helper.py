@@ -2658,6 +2658,239 @@ class HotkeyEdit(QPushButton):
         super().focusOutEvent(e)
 
 
+# --- 무엇이 오갔는지 그대로 적어 두는 창 ------------------------------------
+
+WH_KEYBOARD_LL = 13
+LLKHF_INJECTED = 0x10
+WM_INPUT = 0x00FF
+WM_KEYDOWN_MSG, WM_SYSKEYDOWN_MSG = 0x0100, 0x0104
+RID_INPUT = 0x10000003
+RIDEV_INPUTSINK = 0x00000100
+RIM_TYPEKEYBOARD = 1
+TRACE_PATH = os.path.join(os.path.dirname(CONFIG_PATH), "keytrace.txt")
+
+
+class KBDLLHOOKSTRUCT(ctypes.Structure):
+    _fields_ = [("vkCode", wintypes.DWORD), ("scanCode", wintypes.DWORD),
+                 ("flags", wintypes.DWORD), ("time", wintypes.DWORD),
+                 ("dwExtraInfo", ctypes.POINTER(wintypes.ULONG))]
+
+
+class RAWINPUTDEVICE(ctypes.Structure):
+    _fields_ = [("usUsagePage", wintypes.USHORT), ("usUsage", wintypes.USHORT),
+                 ("dwFlags", wintypes.DWORD), ("hwndTarget", wintypes.HWND)]
+
+
+class RAWINPUTHEADER(ctypes.Structure):
+    _fields_ = [("dwType", wintypes.DWORD), ("dwSize", wintypes.DWORD),
+                 ("hDevice", wintypes.HANDLE), ("wParam", wintypes.WPARAM)]
+
+
+class RAWKEYBOARD(ctypes.Structure):
+    _fields_ = [("MakeCode", wintypes.USHORT), ("Flags", wintypes.USHORT),
+                 ("Reserved", wintypes.USHORT), ("VKey", wintypes.USHORT),
+                 ("Message", wintypes.UINT),
+                 ("ExtraInformation", wintypes.ULONG)]
+
+
+class RAWINPUTKB(ctypes.Structure):
+    _fields_ = [("header", RAWINPUTHEADER), ("keyboard", RAWKEYBOARD),
+                 ("_pad", ctypes.c_byte * 16)]
+
+
+class KeyTraceWindow(QDialog):
+    """키보드가 실제로 무엇을 내보내는지 두 갈래로 같이 적습니다.
+
+    눌러 둔 키가 끊기는지 같은 것은 바깥에서 보면 알 수 없습니다. 원시
+    입력은 어느 장치가 보냈는지를, 저수준 훅은 윈도우의 입력 큐를 지나는
+    것을 보여 주고, 둘을 같은 줄에 시간순으로 놓으면 어디서 끊겼는지가
+    드러납니다.
+
+    훅은 더 높은 권한으로 도는 창이 앞에 있는 동안에는 낮은 권한의
+    프로그램에 아무것도 배달하지 않습니다. 그래서 이 창은 TalesHelper
+    안에서 엽니다 - 관리자 권한으로 띄워 두었다면 그대로 물려받습니다."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("입력 기록")
+        self.setStyleSheet(QSS)
+        self.resize(560, 260)
+        self.lines = []
+        self.start = time.perf_counter()
+        self.devices = {}
+        self._handle = None
+        self._filter = None
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(18, 18, 18, 18)
+        root.setSpacing(10)
+        guide = QLabel(
+            "열려 있는 동안 키보드 입력을 전부 적습니다. 다른 창을 쓰고 "
+            "있어도 기록됩니다.\n\n"
+            "1. 게임을 앞에 두세요\n"
+            "2. 끊기는 그 키를 누르고 있는 채로\n"
+            "3. 사이드 버튼 고리를 한 번 쓰세요\n"
+            "4. 돌아와서 `저장하고 닫기`")
+        guide.setWordWrap(True)
+        root.addWidget(guide)
+
+        self.lbl_count = QLabel("0 줄")
+        self.lbl_count.setObjectName("Caption")
+        root.addWidget(self.lbl_count)
+        self.lbl_where = QLabel(TRACE_PATH)
+        self.lbl_where.setObjectName("Caption")
+        self.lbl_where.setWordWrap(True)
+        root.addWidget(self.lbl_where)
+        root.addStretch()
+
+        row = QHBoxLayout()
+        btn_clear = QPushButton("비우기")
+        btn_clear.clicked.connect(self._clear)
+        btn_save = QPushButton("저장하고 닫기")
+        btn_save.setObjectName("Primary")
+        btn_save.clicked.connect(self.accept)
+        row.addStretch()
+        row.addWidget(btn_clear)
+        row.addWidget(btn_save)
+        root.addLayout(row)
+
+        self.ticker = QTimer(self)
+        self.ticker.setInterval(300)
+        self.ticker.timeout.connect(self._show_count)
+        self.ticker.start()
+
+        self._proc = ctypes.WINFUNCTYPE(
+            ctypes.c_longlong, ctypes.c_int,
+            wintypes.WPARAM, wintypes.LPARAM)(self._on_hook)
+
+    def start_recording(self):
+        self._handle = user32.SetWindowsHookExW(WH_KEYBOARD_LL, self._proc,
+                                                 None, 0)
+        device = RAWINPUTDEVICE()
+        device.usUsagePage, device.usUsage = 0x01, 0x06      # 키보드
+        device.dwFlags = RIDEV_INPUTSINK
+        device.hwndTarget = wintypes.HWND(int(self.winId()))
+        registered = user32.RegisterRawInputDevices(
+            ctypes.byref(device), 1, ctypes.sizeof(RAWINPUTDEVICE))
+        self._filter = _TraceFilter(self)
+        QApplication.instance().installNativeEventFilter(self._filter)
+        self._note("시작", "훅 %s · 원시 입력 %s · %s"
+                    % ("설치됨" if self._handle else "실패",
+                        "등록됨" if registered else "실패",
+                        "관리자 권한" if is_elevated() else "일반 권한"))
+
+    def stop_recording(self):
+        if self._handle:
+            user32.UnhookWindowsHookEx(self._handle)
+            self._handle = None
+        if self._filter:
+            QApplication.instance().removeNativeEventFilter(self._filter)
+            self._filter = None
+        self.ticker.stop()
+
+    def _note(self, source, text):
+        self.lines.append("%8.3f  %-6s %s"
+                           % (time.perf_counter() - self.start, source, text))
+
+    def _clear(self):
+        self.lines = []
+        self.start = time.perf_counter()
+        self._show_count()
+
+    def _show_count(self):
+        self.lbl_count.setText("%d 줄" % len(self.lines))
+
+    def _on_hook(self, code, wparam, lparam):
+        try:
+            if code >= 0:
+                info = ctypes.cast(
+                    lparam, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
+                down = wparam in (WM_KEYDOWN_MSG, WM_SYSKEYDOWN_MSG)
+                self._note("훅", "%-10s %-4s scan=0x%02X%s" % (
+                    vk_text(info.vkCode), "누름" if down else "뗌",
+                    info.scanCode,
+                    "  INJECTED" if info.flags & LLKHF_INJECTED else ""))
+        except Exception:
+            pass
+        return user32.CallNextHookEx(None, code, wparam, lparam)
+
+    def on_raw(self, lparam):
+        size = wintypes.UINT(0)
+        header = ctypes.sizeof(RAWINPUTHEADER)
+        user32.GetRawInputData(wintypes.HANDLE(lparam), RID_INPUT, None,
+                                ctypes.byref(size), header)
+        if not size.value:
+            return
+        buffer = ctypes.create_string_buffer(size.value)
+        if user32.GetRawInputData(wintypes.HANDLE(lparam), RID_INPUT, buffer,
+                                   ctypes.byref(size), header) == -1:
+            return
+        raw = ctypes.cast(buffer, ctypes.POINTER(RAWINPUTKB)).contents
+        if raw.header.dwType != RIM_TYPEKEYBOARD:
+            return
+        board = raw.keyboard
+        if board.VKey in (0, 0xFF):
+            return
+        down = board.Message in (WM_KEYDOWN_MSG, WM_SYSKEYDOWN_MSG)
+        self._note("원시", "%-10s %-4s scan=0x%02X  %s" % (
+            vk_text(board.VKey), "누름" if down else "뗌", board.MakeCode,
+            self._device(raw.header.hDevice)))
+
+    def _device(self, handle):
+        """어느 장치가 보냈는지. 손잡이가 비어 있으면 보낸 장치가 없다는
+        뜻이고, 그것이 곧 SendInput 으로 넣은 입력입니다."""
+        key = int(handle or 0)
+        if not key:
+            return "장치 없음 (주입)"
+        if key not in self.devices:
+            length = wintypes.UINT(0)
+            user32.GetRawInputDeviceInfoW(handle, RIDI_DEVICENAME, None,
+                                           ctypes.byref(length))
+            name = ctypes.create_unicode_buffer(max(2, length.value))
+            got = user32.GetRawInputDeviceInfoW(handle, RIDI_DEVICENAME, name,
+                                                 ctypes.byref(length))
+            self.devices[key] = "" if got in (0, -1) else name.value
+        path = self.devices[key].upper()
+        for piece in path.replace("&", "#").split("#"):
+            if piece.startswith("VID_"):
+                return piece.replace("VID_", "VID ")
+        return "장치 %d" % key
+
+    def save(self):
+        try:
+            with open(TRACE_PATH, "w", encoding="utf-8") as f:
+                f.write("     시각  출처   키          동작 scan   장치\n")
+                f.write("\n".join(self.lines) + "\n")
+            return True
+        except Exception:
+            log_exception(dialog=False)
+            return False
+
+    def done(self, result):
+        self.stop_recording()
+        if result == QDialog.DialogCode.Accepted:
+            self.save()
+        super().done(result)
+
+
+class _TraceFilter(QAbstractNativeEventFilter):
+    """WM_INPUT 은 메시지로 오므로 Qt 보다 먼저 집어 옵니다."""
+
+    def __init__(self, window):
+        super().__init__()
+        self.window = window
+
+    def nativeEventFilter(self, event_type, message):
+        try:
+            msg = ctypes.cast(int(message),
+                               ctypes.POINTER(wintypes.MSG)).contents
+            if msg.message == WM_INPUT:
+                self.window.on_raw(msg.lParam)
+        except Exception:
+            pass
+        return False, 0
+
+
 class SettingsDialog(QDialog):
     def __init__(self, controller, parent=None):
         super().__init__(parent)
@@ -2871,9 +3104,13 @@ class SettingsDialog(QDialog):
         self.lbl_board = QLabel("")
         self.lbl_board.setObjectName("Caption")
         self.lbl_board.setWordWrap(True)
+        btn_trace = QPushButton("입력 기록")
+        btn_trace.setToolTip("키보드가 실제로 무엇을 내보내는지 파일로 남깁니다.")
+        btn_trace.clicked.connect(self._open_trace)
         btn_board = QPushButton("연결 확인")
         btn_board.clicked.connect(self._check_board)
         board_row.addWidget(self.lbl_board, 1)
+        board_row.addWidget(btn_trace)
         board_row.addWidget(btn_board)
         radial_layout.addLayout(board_row)
 
@@ -3770,6 +4007,16 @@ class SettingsDialog(QDialog):
         else:
             self.controller.radial.board.close()
             self.lbl_board.setText("")
+
+    def _open_trace(self):
+        """이 창에서 열어야 TalesHelper 의 권한을 그대로 씁니다. 저수준 훅은
+        더 높은 권한의 창이 앞에 있으면 아무것도 배달하지 않습니다."""
+        window = KeyTraceWindow(self)
+        window.start_recording()
+        if window.exec() == QDialog.DialogCode.Accepted:
+            QMessageBox.information(self, "입력 기록",
+                                     "%d 줄을 저장했습니다.\n%s"
+                                     % (len(window.lines), TRACE_PATH))
 
     def _check_board(self):
         ok, says = self.controller.radial.board.ping()
