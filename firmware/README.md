@@ -25,6 +25,8 @@ rawkey/rawkey.h
 번만 입력을 읽는 탓에 수정자와 키를 20ms 씩 떼어 보내고 있는데, 펌웨어의
 `register_code16` 은 그 순서를 알아서 맞춥니다.
 
+굽는 순서와 확인 방법은 [BUILD.md](BUILD.md) 에 따로 적어 두었습니다.
+
 ## 넣는 법
 
 1. `rawkey.c` 와 `rawkey.h` 를 keymap 폴더에 둡니다.
