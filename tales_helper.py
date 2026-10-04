@@ -200,10 +200,10 @@ DEFAULT_CHORD_KEYS = tuple(range(0x75, 0x7C))
 
 # 마인은 고리와 따로 삽니다. 고리의 한 칸이 아니라 마우스 버튼 하나를
 # 통째로 씁니다.
-DEFAULT_MINE = {"enabled": False, "button": 2, "use_board": True,
+DEFAULT_MINE = {"enabled": False, "button": 2,
                  "keys": list(DEFAULT_CHORD_KEYS)}
 
-DEFAULT_RADIAL = {"enabled": False, "use_board": True,
+DEFAULT_RADIAL = {"enabled": False,
                    "button": 1, "hold_ms": 200,
                    "radius": 130, "dead_zone": 34, "keys": {}}
 # A profile is a set of PIPs inside one preset — typically one per character,
@@ -964,7 +964,6 @@ def normalize_mine(raw, radial=None):
     if not isinstance(raw, dict):
         return out
     out["enabled"] = bool(raw.get("enabled", False))
-    out["use_board"] = bool(raw.get("use_board", True))
     if raw.get("button") in BUTTON_NAMES:
         out["button"] = raw["button"]
     keys = [vk for vk in (raw.get("keys") or ())
@@ -979,7 +978,6 @@ def normalize_radial(raw):
     if not isinstance(raw, dict):
         return out
     out["enabled"] = bool(raw.get("enabled", False))
-    out["use_board"] = bool(raw.get("use_board", True))
     if raw.get("button") in BUTTON_NAMES:
         out["button"] = raw["button"]
     for key, low, high in (("hold_ms", 60, 2000), ("radius", 60, 400),
@@ -1141,7 +1139,12 @@ def load_config():
     config["active_preset"] = active if isinstance(active, int) and 1 <= active <= PRESET_COUNT else 1
 
     config["auto_hide"] = normalize_auto_hide(config.get("auto_hide"))
-    config["mine"] = normalize_mine(config.get("mine"), config.get("radial"))
+    # 키보드로 보낼지는 고리와 마인이 같이 쓰는 하나짜리 설정입니다. 고리
+    # 안에 살던 시절의 값을 그대로 물려받습니다.
+    radial = config.get("radial")
+    inherited = radial.get("use_board", True) if isinstance(radial, dict) else True
+    config["use_board"] = bool(config.get("use_board", inherited))
+    config["mine"] = normalize_mine(config.get("mine"), radial)
     config["radial"] = normalize_radial(config.get("radial"))
     config["toggle_hotkey"] = normalize_hotkey(config.get("toggle_hotkey"))
     config["profile_hotkey"] = normalize_hotkey(config.get("profile_hotkey"))
@@ -3157,33 +3160,6 @@ class SettingsDialog(QDialog):
         hold_row.addStretch()
         radial_layout.addLayout(hold_row)
 
-        self.chk_board = QCheckBox("키를 키보드가 직접 치게 하기")
-        self.chk_board.toggled.connect(self._commit_board)
-        radial_layout.addWidget(self.chk_board)
-
-        board_row = QHBoxLayout()
-        self.lbl_board = QLabel("")
-        self.lbl_board.setObjectName("Caption")
-        self.lbl_board.setWordWrap(True)
-        btn_trace = QPushButton("입력 기록")
-        btn_trace.setToolTip("키보드가 실제로 무엇을 내보내는지 파일로 남깁니다.")
-        btn_trace.clicked.connect(self._open_trace)
-        btn_board = QPushButton("연결 확인")
-        btn_board.clicked.connect(self._check_board)
-        board_row.addWidget(self.lbl_board, 1)
-        board_row.addWidget(btn_trace)
-        board_row.addWidget(btn_board)
-        radial_layout.addLayout(board_row)
-
-        hint_board = QLabel(
-            "QMK · Vial 키보드에 수신기를 구워 두면, 고른 키를 이 프로그램이 "
-            "보내는 대신 키보드가 직접 칩니다. 손가락으로 친 것과 구분되지 "
-            "않습니다. 키보드를 뽑거나 수신기가 없으면 알아서 원래 방식으로 "
-            "돌아갑니다. 펌웨어는 firmware/rawkey 에 있습니다.")
-        hint_board.setObjectName("Caption")
-        hint_board.setWordWrap(True)
-        radial_layout.addWidget(hint_board)
-
         self.radial_slot = "n"
         keys_row = QHBoxLayout()
         keys_row.setSpacing(18)
@@ -3356,6 +3332,35 @@ class SettingsDialog(QDialog):
         self.stack.addWidget(self.detail_scroll)
         right_layout.addWidget(self.stack, 1)
         pip_layout.addWidget(right, 1)
+
+        board_card, board_layout = make_card("키보드로 보내기")
+        self.chk_board = QCheckBox("키를 키보드가 직접 치게 하기")
+        self.chk_board.toggled.connect(self._commit_board)
+        board_layout.addWidget(self.chk_board)
+
+        board_row = QHBoxLayout()
+        self.lbl_board = QLabel("")
+        self.lbl_board.setObjectName("Caption")
+        self.lbl_board.setWordWrap(True)
+        btn_trace = QPushButton("입력 기록")
+        btn_trace.setToolTip("키보드가 실제로 무엇을 내보내는지 파일로 남깁니다.")
+        btn_trace.clicked.connect(self._open_trace)
+        btn_board = QPushButton("연결 확인")
+        btn_board.clicked.connect(self._check_board)
+        board_row.addWidget(self.lbl_board, 1)
+        board_row.addWidget(btn_trace)
+        board_row.addWidget(btn_board)
+        board_layout.addLayout(board_row)
+
+        hint_board = QLabel(
+            "QMK · Vial 키보드에 수신기를 구워 두면, 위의 두 기능이 보내는 "
+            "키를 이 프로그램이 보내는 대신 키보드가 직접 칩니다. 손가락으로 "
+            "친 것과 구분되지 않습니다. 키보드를 뽑거나 수신기가 없으면 알아서 "
+            "원래 방식으로 돌아갑니다. 펌웨어는 firmware/rawkey 에 있습니다.")
+        hint_board.setObjectName("Caption")
+        hint_board.setWordWrap(True)
+        board_layout.addWidget(hint_board)
+        mouse_layout.addWidget(board_card)
 
         mouse_layout.addStretch()
         general_layout.addStretch()
@@ -3577,6 +3582,7 @@ class SettingsDialog(QDialog):
         self._load_preset_fields()
         self._load_radial()
         self._load_mine()
+        self._load_board()
         self._reload_profile_combo()
         self.update_preset_state()
         self.reload_region_list()
@@ -3983,6 +3989,20 @@ class SettingsDialog(QDialog):
     def _mine_options(self):
         return self.controller.config.setdefault("mine", copy.deepcopy(DEFAULT_MINE))
 
+    def _load_board(self):
+        """키보드로 보내기는 고리와 마인이 같이 씁니다."""
+        self._loading += 1
+        try:
+            self.chk_board.setChecked(
+                bool(self.controller.config.get("use_board", True)))
+            self.chk_board.setEnabled(is_elevated())
+        finally:
+            self._loading -= 1
+        self.lbl_board.setText(
+            "" if not self.controller.config.get("use_board", True)
+            else "`연결 확인` 으로 지금 상태를 볼 수 있습니다. 키보드가 없으면 "
+                  "알아서 원래 방식으로 보냅니다.")
+
     def _load_mine(self):
         options = self._mine_options()
         elevated = is_elevated()
@@ -4067,19 +4087,14 @@ class SettingsDialog(QDialog):
             index = self.combo_radial_button.findData(options.get("button", 1))
             self.combo_radial_button.setCurrentIndex(max(0, index))
             self.spin_radial_hold.setValue(int(options.get("hold_ms", 200)))
-            self.chk_board.setChecked(bool(options.get("use_board")))
             self._show_radial_slot()
         finally:
             self._loading -= 1
         live = elevated and options.get("enabled")
         for widget in (self.combo_radial_button, self.spin_radial_hold,
-                        self.radial_pick, self.radial_key, self.radial_name,
-                        self.chk_board):
+                        self.radial_pick, self.radial_key, self.radial_name):
             widget.setEnabled(bool(live))
-        self.lbl_board.setText("" if not options.get("use_board")
-                                else "`연결 확인` 으로 지금 상태를 볼 수 있습니다. "
-                                      "키보드가 없으면 알아서 원래 방식으로 "
-                                      "보냅니다.")
+
         if not elevated:
             self.lbl_radial_admin.setText(
                 "게임이 관리자 권한으로 실행되기 때문에, 이 기능을 쓰려면 "
@@ -4139,13 +4154,13 @@ class SettingsDialog(QDialog):
     def _commit_board(self, checked):
         if self._loading:
             return
-        self._radial_options()["use_board"] = bool(checked)
+        self.controller.config["use_board"] = bool(checked)
         save_config(self.controller.config)
         if checked:
             self._check_board()
         else:
             self.controller.radial.board.close()
-            self.lbl_board.setText("")
+        self._load_board()
 
     def _open_trace(self):
         """이 창에서 열어야 TalesHelper 의 권한을 그대로 씁니다. 저수준 훅은
@@ -4858,7 +4873,7 @@ class RadialMenuController(QObject):
         """Put the hook in place, or take it away, to match the settings."""
         if self.hook_wanted():
             self.hook.start()
-            if self.options().get("use_board") or self.mine().get("use_board"):
+            if self.controller.config.get("use_board", True):
                 self.board.probe()
         else:
             self._cancel()
@@ -4875,7 +4890,7 @@ class RadialMenuController(QObject):
         """키보드에게 맡길지. v3 수신기면 언제든 맡기고, 그 전 버전이면
         누르고 있는 키가 있을 때만 피합니다. 누른 채로 키보드가 키를 쳐도
         그 키의 반복만 멈출 뿐 게임의 스킬은 끊기지 않는 것을 확인했습니다."""
-        if not self.options().get("use_board"):
+        if not self.controller.config.get("use_board", True):
             return False
         return (self.board.version >= BOARD_REPEAT_VERSION
                  or not any_key_held())
@@ -4894,7 +4909,7 @@ class RadialMenuController(QObject):
         if not self._game_in_front():
             return
         keys = self.mine().get("keys") or list(DEFAULT_CHORD_KEYS)
-        if self._board_takes_it(self.mine()) and self.board.chord(keys):
+        if self._board_takes_it() and self.board.chord(keys):
             return
         # 한 번의 SendInput 은 한 묶음으로 들어갑니다. 따로 보내면 게임이
         # 프레임 사이에서 끊어 볼 수 있습니다.
