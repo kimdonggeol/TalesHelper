@@ -157,7 +157,7 @@ except Exception:
 TARGET_PROCESS = "InphaseNXD.exe"
 TARGET_LABEL = "테일즈위버"  # shown in the UI instead of the process name
 
-APP_VERSION = "1.1.1"
+APP_VERSION = "1.2.0"
 REPO_URL = "https://github.com/kimdonggeol/TalesHelper"
 LATEST_RELEASE_API = "https://api.github.com/repos/kimdonggeol/TalesHelper/releases/latest"
 RELEASES_URL = REPO_URL + "/releases/latest"
@@ -198,9 +198,11 @@ DEFAULT_PROFILE_HOTKEY = {"mods": MOD_CONTROL, "vk": 0x7A, "text": "Ctrl+F11"}
 CHORD_ACTION = "chord"
 DEFAULT_CHORD_KEYS = tuple(range(0x75, 0x7C))
 
+BUTTON_BACK, BUTTON_FORWARD, BUTTON_WHEEL = 1, 2, 3
+
 # 마인은 고리와 따로 삽니다. 고리의 한 칸이 아니라 마우스 버튼 하나를
 # 통째로 씁니다.
-DEFAULT_MINE = {"enabled": False, "button": 2,
+DEFAULT_MINE = {"enabled": False, "button": BUTTON_FORWARD,
                  "keys": list(DEFAULT_CHORD_KEYS)}
 
 DEFAULT_RADIAL = {"enabled": False, "tap_key": None,
@@ -1446,7 +1448,6 @@ WM_MBUTTONDOWN, WM_MBUTTONUP = 0x0207, 0x0208
 # The buttons that can carry the menu, as the settings store them. The side
 # buttons say which they are in the message; the wheel click has no such
 # number, so it is given one here.
-BUTTON_BACK, BUTTON_FORWARD, BUTTON_WHEEL = 1, 2, 3
 BUTTON_NAMES = {BUTTON_BACK: "사이드 버튼 1 (뒤로)",
                  BUTTON_FORWARD: "사이드 버튼 2 (앞으로)",
                  BUTTON_WHEEL: "휠 클릭"}
@@ -1792,8 +1793,12 @@ class KeyboardLink:
         self.via = 0
 
     def open(self):
+        """다시 연 것이면 수신기에게 한 번 더 묻습니다. 뽑았다 꽂거나 다시
+        구운 뒤에는 버전도 장치도 달라져 있을 수 있는데, 그걸 모르고 쓰면
+        담기지도 않을 코드를 보내게 됩니다."""
         if self.handle:
             return True
+        reopened = self.path is not None
         found = find_board()
         if not found:
             return False
@@ -1807,6 +1812,8 @@ class KeyboardLink:
         if handle == INVALID_HANDLE:
             return False
         self.handle = handle
+        if reopened:
+            self.ping(wait_ms=150)
         return True
 
     def close(self):
@@ -3140,7 +3147,8 @@ class SettingsDialog(QDialog):
         radial_card, radial_layout = make_card("사이드 버튼 메뉴")
         hint_radial = QLabel("마우스 사이드 버튼을 누르고 있으면 커서 둘레에 키 고리가 "
                               "나타납니다. 방향으로 밀고 버튼을 떼면 그 키가 게임에 "
-                              "전달되고, 짧게 누르면 원래 동작 그대로입니다.")
+                              "전달됩니다. 그 전에 떼면 아래에 걸어 둔 키가 "
+                              "나가고, 비워 두었으면 원래 동작 그대로입니다.")
         hint_radial.setObjectName("Caption")
         hint_radial.setWordWrap(True)
         radial_layout.addWidget(hint_radial)
@@ -4038,7 +4046,8 @@ class SettingsDialog(QDialog):
         try:
             self.chk_mine.setChecked(bool(options.get("enabled")))
             self.chk_mine.setEnabled(elevated)
-            index = self.combo_mine_button.findData(options.get("button", 2))
+            index = self.combo_mine_button.findData(
+                options.get("button", BUTTON_FORWARD))
             self.combo_mine_button.setCurrentIndex(max(0, index))
         finally:
             self._loading -= 1
@@ -4078,7 +4087,8 @@ class SettingsDialog(QDialog):
         if self._loading:
             return
         options = self._mine_options()
-        if checked and self._button_clash(options.get("button", 2), True):
+        if checked and self._button_clash(
+                options.get("button", BUTTON_FORWARD), True):
             self._loading += 1
             self.chk_mine.setChecked(False)
             self._loading -= 1
@@ -4095,7 +4105,7 @@ class SettingsDialog(QDialog):
         if self._button_clash(which, True):
             self._loading += 1
             index = self.combo_mine_button.findData(
-                self._mine_options().get("button", 2))
+                self._mine_options().get("button", BUTTON_FORWARD))
             self.combo_mine_button.setCurrentIndex(max(0, index))
             self._loading -= 1
             return
