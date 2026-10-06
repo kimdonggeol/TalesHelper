@@ -1,0 +1,38 @@
+{
+  "always_on_top": true,
+  "refresh_ms": 100,
+  "preset_hotkeys": {
+    "1": "Ctrl+F9",
+    "2": "Ctrl+F10",
+    "3": "Ctrl+F11",
+    "4": "Ctrl+F12"
+  },
+  "presets": {
+    "1": {
+      "name": "프리셋 1",
+      "width": 1920,
+      "height": 1200
+    },
+    "2": {
+      "name": "프리셋 2",
+      "width": null,
+      "height": null
+    },
+    "3": {
+      "name": "프리셋 3",
+      "width": null,
+      "height": null
+    },
+    "4": {
+      "name": "프리셋 4",
+      "width": null,
+      "height": null
+    }
+  },
+  "active_preset": 1,
+  "auto_switch_preset": true,
+  "follow_target": true,
+  "only_when_active": true,
+  "pip_coords": "relative",
+  "regions": []
+}

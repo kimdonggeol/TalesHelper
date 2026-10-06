@@ -1,6 +1,5 @@
 # 사용자별 설정 · 로그 (개인 환경 정보가 들어감)
 config.json
-config.json.old
 config.json.tmp
 error.log
 keytrace.txt

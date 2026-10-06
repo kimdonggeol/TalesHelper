@@ -96,9 +96,47 @@ def anchor_box(anchor, width, height):
         y = (height - box_h) // 2
     return x, y, box_w, box_h
 ERROR_LOG_PATH = os.path.join(BASE_DIR, "error.log")
+ERROR_LOG_MAX = 512 * 1024
 
 
 _dialog_shown = False
+_seen_counts = {}
+
+
+def trim_error_log():
+    """커지면 오래된 쪽을 버립니다.
+
+    끝없이 쌓이면 정작 방금 난 문제가 몇 주 전 기록에 묻힙니다. 실제로 이
+    파일이 4MB 까지 자랐고, 그 대부분이 프로그램 이름을 바꾸기 전 것이었습니다."""
+    try:
+        if os.path.getsize(ERROR_LOG_PATH) <= ERROR_LOG_MAX:
+            return
+        with open(ERROR_LOG_PATH, "rb") as f:
+            f.seek(-(ERROR_LOG_MAX // 2), os.SEEK_END)
+            tail = f.read()
+        # 가운데가 잘린 첫 줄은 버립니다.
+        _, _, tail = tail.partition(b"\n")
+        with open(ERROR_LOG_PATH, "wb") as f:
+            f.write("(여기까지 오래된 기록은 잘라냈습니다)\n".encode("utf-8"))
+            f.write(tail)
+    except Exception:
+        pass
+
+
+def log_once(key, msg=None):
+    """같은 자리에서 거듭 나는 예외는 한 번만 남깁니다.
+
+    훅 콜백은 키를 누를 때마다, 때로는 초당 수십 번 불립니다. 그대로 적으면
+    로그가 순식간에 터지고, 그렇다고 조용히 삼키면 아무 데도 안 남습니다 -
+    저수준 훅이 통째로 죽은 적이 있는데 그때 아무 기록도 없었습니다. 처음
+    한 번과 그 뒤 드문드문만 남깁니다."""
+    count = _seen_counts.get(key, 0) + 1
+    _seen_counts[key] = count
+    if count == 1:
+        log_exception(msg, dialog=False)
+    elif count in (10, 100, 1000, 10000):
+        log_exception("(%s 에서 같은 예외가 %d 번째입니다)" % (key, count),
+                       dialog=False)
 
 
 def log_exception(msg=None, dialog=True):
@@ -106,6 +144,7 @@ def log_exception(msg=None, dialog=True):
     global _dialog_shown
     msg = msg or traceback.format_exc()
     try:
+        trim_error_log()
         with open(ERROR_LOG_PATH, "a", encoding="utf-8") as f:
             f.write(msg + "\n")
     except Exception:
@@ -2771,7 +2810,7 @@ class KeyTraceWindow(QDialog):
                     info.scanCode,
                     "  INJECTED" if info.flags & LLKHF_INJECTED else ""))
         except Exception:
-            pass
+            log_once("KeyTraceWindow._on_hook")
         return user32.CallNextHookEx(None, code, wparam, lparam)
 
     def on_raw(self, lparam):
@@ -2847,7 +2886,7 @@ class _TraceFilter(QAbstractNativeEventFilter):
             if msg.message == WM_INPUT:
                 self.window.on_raw(msg.lParam)
         except Exception:
-            pass
+            log_once("_TraceFilter.nativeEventFilter")
         return False, 0
 
 
@@ -4732,7 +4771,11 @@ class RadialMenuController(QObject):
         return bool(self.options().get("enabled")) and self.available()
 
     def keys_wanted(self):
-        return bool(self.button_keys().get("enabled")) and self.available()
+        """칸이 하나라도 채워져 있어야 합니다. 켜 두기만 하고 다 비워 두면
+        훅만 걸리고 하는 일이 없습니다."""
+        options = self.button_keys()
+        return bool(options.get("enabled") and options.get("keys")
+                     and self.available())
 
     def hook_wanted(self):
         """둘 중 하나라도 쓰면 훅은 걸려 있어야 합니다."""
