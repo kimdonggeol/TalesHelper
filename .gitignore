@@ -2,7 +2,6 @@
 config.json
 config.json.tmp
 error.log
-keytrace.txt
 
 # Python
 __pycache__/
