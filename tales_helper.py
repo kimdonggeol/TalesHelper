@@ -494,46 +494,6 @@ class _BITMAPINFOHEADER(ctypes.Structure):
                 ("biClrImportant", wintypes.DWORD)]
 
 
-def grab_screen(x, y, w, h, out_w=None, out_h=None):
-    """A rectangle of the desktop as a BGR array. The game draws through
-    DirectX, so its own window cannot be read with PrintWindow — reading the
-    composited screen is the only way to see what it is showing.
-
-    out_w/out_h shrink during the blit, which is far cheaper than scaling the
-    full-size image afterwards."""
-    if not MATCHING_AVAILABLE or w <= 0 or h <= 0:
-        return None
-    out_w, out_h = out_w or w, out_h or h
-    screen = mem = bitmap = None
-    try:
-        screen = user32.GetDC(0)
-        mem = gdi32.CreateCompatibleDC(screen)
-        bitmap = gdi32.CreateCompatibleBitmap(screen, out_w, out_h)
-        gdi32.SelectObject(mem, bitmap)
-        if (out_w, out_h) == (w, h):
-            gdi32.BitBlt(mem, 0, 0, w, h, screen, x, y, SRCCOPY)
-        else:
-            gdi32.SetStretchBltMode(mem, HALFTONE)
-            gdi32.StretchBlt(mem, 0, 0, out_w, out_h, screen, x, y, w, h, SRCCOPY)
-        buffer = _np.empty((out_h, out_w, 4), dtype=_np.uint8)
-        header = _BITMAPINFOHEADER(ctypes.sizeof(_BITMAPINFOHEADER), out_w,
-                                    -out_h, 1, 32, 0, 0, 0, 0, 0, 0)
-        gdi32.GetDIBits(mem, bitmap, 0, out_h,
-                        buffer.ctypes.data_as(ctypes.c_void_p),
-                        ctypes.byref(header), 0)
-        return buffer[:, :, :3]
-    except Exception:
-        log_exception(dialog=False)
-        return None
-    finally:
-        if bitmap:
-            gdi32.DeleteObject(bitmap)
-        if mem:
-            gdi32.DeleteDC(mem)
-        if screen:
-            user32.ReleaseDC(0, screen)
-
-
 def grab_client(hwnd, x, y, w, h, out_w=None, out_h=None):
     """A rectangle of the target's client area, in client coordinates.
 
@@ -2228,11 +2188,6 @@ class RegionPickerWindow(QWidget):
         self.banner = HudBanner(
             "영역 수정 중" if editing else "영역 추가 중",
             "드래그해서 범위를 지정하세요   ·   ESC 로 취소")
-
-    def set_prompt(self, title, subtitle):
-        self.banner.title = title
-        self.banner.subtitle = subtitle
-        self.banner.update()
 
     def _place_native(self):
         """Qt's logical<->native mapping is per-screen and origin-anchored, so
@@ -5216,33 +5171,6 @@ class PipController(QObject):
         self.watcher.reload()
         self.refresh_settings()
         return trigger
-
-    def _set_trigger_field(self, trigger_id, field, value, allowed):
-        if value not in allowed:
-            return
-        for trigger in self.auto_hide_triggers():
-            if trigger.get("id") == trigger_id:
-                if trigger.get(field) == value:
-                    return
-                trigger[field] = value
-                # The area to search changed, so where it was last seen is
-                # no longer something to trust.
-                trigger["found"] = {}
-                break
-        save_config(self.config)
-        self.watcher.reload()
-
-    def _on_trigger_selected(self, frame, x, y, w, h, on_done=None):
-        height, width = frame.shape[:2]
-        x0, y0 = int(x * width), int(y * height)
-        x1, y1 = x0 + max(1, int(w * width)), y0 + max(1, int(h * height))
-        crop = frame[y0:min(y1, height), x0:min(x1, width)]
-        if crop.size == 0:
-            return
-        self.add_trigger(crop.copy())
-        self.focus_target()
-        if on_done:
-            on_done()
 
     def toggle_hidden(self):
         self.pips_hidden = not self.pips_hidden
