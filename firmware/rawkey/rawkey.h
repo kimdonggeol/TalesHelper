@@ -37,5 +37,7 @@ bool rawkey_receive(uint8_t *data, uint8_t length);
 /* 눌러 둔 키가 있으면 전부 뗍니다. */
 void rawkey_release(void);
 
-/* 손가락이 누르고 있는 키의 자동 반복을 되살립니다. 뗀 직후에 부릅니다. */
+/* 손가락이 누르고 있는 키의 자동 반복을 되살립니다. 그 키의 뗌이 호스트에
+ * 한 번 보여 채널링 스킬이 끊기므로, RAWKEY_RESTORE_REPEAT 를 정의했을
+ * 때만 뗌 처리에서 부릅니다. v4 처럼 다른 장치로 치면 필요 없습니다. */
 void rawkey_restore_repeat(void);
