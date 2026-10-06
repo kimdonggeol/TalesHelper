@@ -239,7 +239,7 @@ BUTTON_BACK, BUTTON_FORWARD, BUTTON_WHEEL = 1, 2, 3
 
 # 휠 클릭은 고리가 씁니다. 나머지 두 버튼은 키 하나씩 맡습니다.
 BUTTON_KEY_SLOTS = (BUTTON_BACK, BUTTON_FORWARD)
-DEFAULT_BUTTON_KEYS = {"enabled": False, "keys": {}}
+DEFAULT_BUTTON_KEYS = {"on": {}, "keys": {}}
 
 DEFAULT_RADIAL = {"enabled": False, "tap_key": None, "hold_ms": 200,
                    "radius": 130, "dead_zone": 34, "keys": {}}
@@ -946,16 +946,22 @@ BUILTIN_POSITIONS = load_builtin_positions()
 
 
 def normalize_button_keys(raw):
-    """버튼 하나에 키 하나. 휠 클릭은 고리가 쓰므로 여기에 들어오지 못합니다."""
+    """버튼 하나에 키 하나. 휠 클릭은 고리가 쓰므로 여기에 들어오지 못합니다.
+
+    버튼마다 따로 켭니다. 하나로 묶여 있던 시절의 설정은 걸려 있던 칸들을
+    그대로 켠 것으로 봅니다."""
     out = copy.deepcopy(DEFAULT_BUTTON_KEYS)
     if not isinstance(raw, dict):
         return out
-    out["enabled"] = bool(raw.get("enabled", False))
+    was_on = bool(raw.get("enabled", False))
     for which in BUTTON_KEY_SLOTS:
         bound = normalize_hotkey((raw.get("keys") or {}).get(str(which)),
                                   require_mods=False)
-        if bound:
-            out["keys"][str(which)] = bound
+        if not bound:
+            continue
+        out["keys"][str(which)] = bound
+        on = (raw.get("on") or {}).get(str(which))
+        out["on"][str(which)] = was_on if on is None else bool(on)
     return out
 
 
@@ -3060,7 +3066,7 @@ class SettingsDialog(QDialog):
 
         general_layout.addWidget(global_card)
 
-        radial_card, radial_layout = make_card("사이드 버튼 메뉴")
+        radial_card, radial_layout = make_card("휠 버튼 메뉴")
         hint_radial = QLabel("휠 클릭을 누르고 있으면 커서 둘레에 키 고리가 "
                               "나타납니다. 방향으로 밀고 버튼을 떼면 그 키가 게임에 "
                               "전달됩니다. 그 전에 떼면 아래에 걸어 둔 키가 "
@@ -3069,7 +3075,7 @@ class SettingsDialog(QDialog):
         hint_radial.setWordWrap(True)
         radial_layout.addWidget(hint_radial)
 
-        self.chk_radial = QCheckBox("사이드 버튼 메뉴 사용")
+        self.chk_radial = QCheckBox("휠 버튼 메뉴 사용")
         self.chk_radial.toggled.connect(self._commit_radial_enabled)
         radial_layout.addWidget(self.chk_radial)
 
@@ -3153,20 +3159,19 @@ class SettingsDialog(QDialog):
         hint_keys_card.setWordWrap(True)
         keys_layout.addWidget(hint_keys_card)
 
-        self.chk_button_keys = QCheckBox("버튼별 키 사용")
-        self.chk_button_keys.toggled.connect(self._commit_button_keys_enabled)
-        keys_layout.addWidget(self.chk_button_keys)
-
         self.lbl_button_keys = QLabel("")
         self.lbl_button_keys.setObjectName("Caption")
         self.lbl_button_keys.setWordWrap(True)
         keys_layout.addWidget(self.lbl_button_keys)
 
         self.button_key_edits = {}
+        self.button_key_checks = {}
         for which in BUTTON_KEY_SLOTS:
-            cap = QLabel(BUTTON_NAMES[which])
-            cap.setObjectName("Caption")
+            cap = QCheckBox(BUTTON_NAMES[which])
+            cap.toggled.connect(
+                lambda on, w=which: self._commit_button_key_on(w, on))
             keys_layout.addWidget(cap)
+            self.button_key_checks[which] = cap
             editor = HotkeyEdit(require_mods=False, empty_text="원래 동작 그대로")
             editor.captured.connect(
                 lambda hotkey, w=which: self._commit_button_key(w, hotkey))
@@ -3174,8 +3179,9 @@ class SettingsDialog(QDialog):
             self.button_key_edits[which] = editor
 
         hint_keys_del = QLabel(
-            "버튼을 누른 뒤 보낼 키를 입력하세요. 비워 두면 그 버튼은 원래대로 "
-            "동작합니다. Ctrl / Shift / Alt 조합도 되고, Del 로 비웁니다.")
+            "버튼을 켜고 보낼 키를 입력하세요. 꺼 두거나 비워 두면 그 버튼은 "
+            "원래대로 동작합니다. Ctrl / Shift / Alt 조합도 되고, Del 로 "
+            "비웁니다.")
         hint_keys_del.setObjectName("Caption")
         hint_keys_del.setWordWrap(True)
         keys_layout.addWidget(hint_keys_del)
@@ -3279,10 +3285,7 @@ class SettingsDialog(QDialog):
         right_layout.addWidget(self.stack, 1)
         pip_layout.addWidget(right, 1)
 
-        board_card, board_layout = make_card("키보드로 보내기")
-        self.chk_board = QCheckBox("키를 키보드가 직접 치게 하기")
-        self.chk_board.toggled.connect(self._commit_board)
-        board_layout.addWidget(self.chk_board)
+        board_card, board_layout = make_card("키보드")
 
         board_row = QHBoxLayout()
         self.lbl_board = QLabel("")
@@ -3301,8 +3304,9 @@ class SettingsDialog(QDialog):
         hint_board = QLabel(
             "QMK · Vial 키보드에 수신기를 구워 두면, 위의 두 기능이 보내는 "
             "키를 이 프로그램이 보내는 대신 키보드가 직접 칩니다. 손가락으로 "
-            "친 것과 구분되지 않습니다. 키보드를 뽑거나 수신기가 없으면 알아서 "
-            "원래 방식으로 돌아갑니다. 펌웨어는 firmware/rawkey 에 있습니다.")
+            "친 것과 구분되지 않습니다. 따로 켤 것은 없고, 키보드를 뽑거나 "
+            "수신기가 없으면 알아서 원래 방식으로 돌아갑니다. 펌웨어는 "
+            "firmware/rawkey 에 있습니다.")
         hint_board.setObjectName("Caption")
         hint_board.setWordWrap(True)
         board_layout.addWidget(hint_board)
@@ -3845,7 +3849,7 @@ class SettingsDialog(QDialog):
         kind = autostart_kind()
         if kind == "task":
             self.lbl_startup.setText(
-                "관리자 권한으로 등록되어 있습니다. 사이드 버튼 메뉴는 이 상태라야 "
+                "관리자 권한으로 등록되어 있습니다. 휠 버튼 메뉴는 이 상태라야 "
                 "게임에서 동작합니다.")
         elif kind == "run":
             self.lbl_startup.setText(
@@ -3941,29 +3945,29 @@ class SettingsDialog(QDialog):
         elevated = is_elevated()
         self._loading += 1
         try:
-            self.chk_button_keys.setChecked(bool(options.get("enabled")))
-            self.chk_button_keys.setEnabled(elevated)
             for which, editor in self.button_key_edits.items():
                 editor.set_value((options.get("keys") or {}).get(str(which)))
+                check = self.button_key_checks[which]
+                check.setChecked(bool((options.get("on") or {}).get(str(which))))
+                check.setEnabled(elevated)
         finally:
             self._loading -= 1
-        live = elevated and options.get("enabled")
         for editor in self.button_key_edits.values():
-            editor.setEnabled(bool(live))
+            editor.setEnabled(elevated)
         if not elevated:
             self.lbl_button_keys.setText(
                 "게임이 관리자 권한으로 실행되기 때문에, 이 기능을 쓰려면 "
                 "TalesHelper도 관리자로 실행해야 합니다.")
-        elif not options.get("enabled"):
-            self.lbl_button_keys.setText("꺼져 있습니다.")
+        elif not any((options.get("on") or {}).values()):
+            self.lbl_button_keys.setText("둘 다 꺼져 있습니다.")
         else:
             self.lbl_button_keys.setText(
                 f"커서가 {TARGET_LABEL} 창 위에 있을 때만 버튼을 가져옵니다.")
 
-    def _commit_button_keys_enabled(self, checked):
+    def _commit_button_key_on(self, which, on):
         if self._loading:
             return
-        self._button_key_options()["enabled"] = bool(checked)
+        self._button_key_options().setdefault("on", {})[str(which)] = bool(on)
         save_config(self.controller.config)
         self.controller.radial.apply()
         self._load_button_keys()
@@ -3971,32 +3975,25 @@ class SettingsDialog(QDialog):
     def _commit_button_key(self, which, hotkey):
         if self._loading:
             return
-        keys = self._button_key_options().setdefault("keys", {})
+        options = self._button_key_options()
+        keys = options.setdefault("keys", {})
         bound = normalize_hotkey(hotkey, require_mods=False)
         if bound:
             keys[str(which)] = bound
+            # 키를 걸었으면 쓰겠다는 뜻입니다. 체크까지 따로 하게 두면 왜
+            # 안 되는지 모른 채 헤매게 됩니다.
+            options.setdefault("on", {})[str(which)] = True
         else:
             keys.pop(str(which), None)
+            options.setdefault("on", {}).pop(str(which), None)
         save_config(self.controller.config)
-        self._loading += 1
-        try:
-            self.button_key_edits[which].set_value(keys.get(str(which)))
-        finally:
-            self._loading -= 1
+        self.controller.radial.apply()
+        self._load_button_keys()
 
     def _load_board(self):
-        """키보드로 보내기는 고리와 마인이 같이 씁니다."""
-        self._loading += 1
-        try:
-            self.chk_board.setChecked(
-                bool(self.controller.config.get("use_board", True)))
-            self.chk_board.setEnabled(is_elevated())
-        finally:
-            self._loading -= 1
         self.lbl_board.setText(
-            "" if not self.controller.config.get("use_board", True)
-            else "`연결 확인` 으로 지금 상태를 볼 수 있습니다. 키보드가 없으면 "
-                  "알아서 원래 방식으로 보냅니다.")
+            "`연결 확인` 으로 지금 상태를 볼 수 있습니다. 키보드가 없으면 "
+            "알아서 원래 방식으로 보냅니다.")
 
     def _radial_options(self):
         return self.controller.config.setdefault("radial", copy.deepcopy(DEFAULT_RADIAL))
@@ -4069,17 +4066,6 @@ class SettingsDialog(QDialog):
         self.controller.radial.apply()
         self._load_radial()
 
-    def _commit_board(self, checked):
-        if self._loading:
-            return
-        self.controller.config["use_board"] = bool(checked)
-        save_config(self.controller.config)
-        if checked:
-            self._check_board()
-        else:
-            self.controller.radial.board.close()
-        self._load_board()
-
     def _open_trace(self):
         """이 창에서 열어야 TalesHelper 의 권한을 그대로 씁니다. 저수준 훅은
         더 높은 권한의 창이 앞에 있으면 아무것도 배달하지 않습니다."""
@@ -4093,9 +4079,8 @@ class SettingsDialog(QDialog):
     def _check_board(self):
         ok, says = self.controller.radial.board.ping()
         self.lbl_board.setText(says)
-        if not ok and self.chk_board.isChecked():
-            self.lbl_board.setText(
-                says + " 그동안은 원래 방식으로 보냅니다.")
+        if not ok:
+            self.lbl_board.setText(says + " 그동안은 원래 방식으로 보냅니다.")
 
     def _commit_radial_tap(self, hotkey):
         if self._loading:
@@ -4758,10 +4743,12 @@ class RadialMenuController(QObject):
         return self.controller.config.get("button_keys") or {}
 
     def button_key(self, which):
-        """그 버튼에 걸린 키. 없으면 None 이고 원래 동작이 그대로 나갑니다."""
-        if not self.button_keys().get("enabled") or not self.available():
+        """그 버튼에 걸린 키. 꺼져 있거나 비어 있으면 None 이고, 그러면 원래
+        동작이 그대로 나갑니다."""
+        options = self.button_keys()
+        if not self.available() or not (options.get("on") or {}).get(str(which)):
             return None
-        return (self.button_keys().get("keys") or {}).get(str(which))
+        return (options.get("keys") or {}).get(str(which))
 
     def available(self):
         """Elevated, or none of this can work at all."""
@@ -4771,11 +4758,9 @@ class RadialMenuController(QObject):
         return bool(self.options().get("enabled")) and self.available()
 
     def keys_wanted(self):
-        """칸이 하나라도 채워져 있어야 합니다. 켜 두기만 하고 다 비워 두면
-        훅만 걸리고 하는 일이 없습니다."""
-        options = self.button_keys()
-        return bool(options.get("enabled") and options.get("keys")
-                     and self.available())
+        """켜 두기만 하고 칸이 비어 있으면 훅만 걸리고 하는 일이 없습니다."""
+        return self.available() and any(
+            self.button_key(which) for which in BUTTON_KEY_SLOTS)
 
     def hook_wanted(self):
         """둘 중 하나라도 쓰면 훅은 걸려 있어야 합니다."""
