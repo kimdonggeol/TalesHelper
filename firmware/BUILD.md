@@ -1,41 +1,45 @@
-# rawkey 굽기
+# Flashing rawkey
 
-이 문서만 보고 진행할 수 있게 적었습니다. 앞뒤 맥락은 몰라도 됩니다.
+Written so this page is enough on its own. None of the surrounding context is
+needed.
 
-## 하려는 것
+## What this is for
 
-`C:\project\tales-pip\firmware\rawkey\` 의 `rawkey.c` / `rawkey.h` 를
-Vial 키보드 펌웨어에 넣어 다시 굽습니다. 이 저장소의 TalesHelper 가 그
-키보드에게 "이 키 눌러" 를 시키는 수신기입니다.
+Putting `rawkey.c` / `rawkey.h` from
+`C:\project\tales-pip\firmware\rawkey\` into the Vial keyboard firmware and
+flashing it again. It is the receiver that TalesHelper, in this repository,
+tells "press this key".
 
-**2026-10-04 에 v4 로 구웠습니다.**
+**Flashed as v4 on 2026-10-04.**
 
-| | 추가된 것 |
+| | added |
 |---|---|
-| v2 | `RAWKEY_CHORD (0x43)` — 키 여럿을 한 리포트 안에서 같이 누름 |
-| v3 | 키를 누른 채로도 키보드로 보냄. `rawkey_restore_repeat()` 는 `RAWKEY_RESTORE_REPEAT` 를 정의할 때만 |
-| v4 | 손가락이 쓰지 않는 쪽 키보드 장치(6KRO/NKRO)로 침. 핑 답 세 번째 바이트가 그 장치 |
+| v2 | `RAWKEY_CHORD (0x43)` — several keys pressed together inside one report |
+| v3 | goes to the keyboard even while a key is held. `rawkey_restore_repeat()` only where `RAWKEY_RESTORE_REPEAT` is defined |
+| v4 | types on whichever keyboard device (6KRO/NKRO) the hand is not using. The third byte of a ping's answer says which |
 
-v3 부터 TalesHelper 는 누르고 있는 키가 있어도 `SendInput` 으로 우회하지
-않습니다. v3 는 같은 장치로 쳐서 반복형 스킬과 채널링 스킬 중 하나가
-끊겼고, v4 에서 둘 다 이어지는 것을 게임에서 확인했습니다. 자세한 것은
-`README.md` 의 "눌러 둔 키의 자동 반복" 과 "v4".
+From v3 on, TalesHelper no longer detours through `SendInput` when a key is
+held. v3 typed on the one device, which ended either the repeating skill or
+the channelled one; v4 was confirmed in the game to leave both running. The
+details are under "The auto-repeat on a key being held" and "v4" in
+`README.md`.
 
-## 대상
+## The target
 
 | | |
 |---|---|
-| 키보드 | `Tomak79H` (era/sirind/tomak79h), 스플릿 |
-| 펌웨어 | vial-qmk, `C:\vial-qmk` |
+| keyboard | `Tomak79H` (era/sirind/tomak79h), split |
+| firmware | vial-qmk, `C:\vial-qmk` |
 | keymap | `C:\vial-qmk\keyboards\era\sirind\tomak79h\keymaps\vial\` |
 | USB | VID `0x4552` PID `0x0014` |
 
-`rules.mk` 에 `SRC += rawkey.c` 는 **이미 들어가 있습니다.** `RAW_ENABLE` 은
-Vial 이 켜 두므로 따로 넣지 않습니다.
+`SRC += rawkey.c` is **already in** `rules.mk`. `RAW_ENABLE` is on from Vial,
+so it is not added separately.
 
-## 순서
+## Steps
 
-**1. 파일 복사** — 저장소 쪽이 정본입니다. 둘 다 덮어쓰세요.
+**1. Copy the files** — the repository holds the canonical copy. Overwrite
+both.
 
 ```
 C:\project\tales-pip\firmware\rawkey\rawkey.c
@@ -44,55 +48,55 @@ C:\project\tales-pip\firmware\rawkey\rawkey.h
 C:\vial-qmk\keyboards\era\sirind\tomak79h\keymaps\vial\
 ```
 
-**2. 빌드**
+**2. Build**
 
 ```
 qmk compile -kb era/sirind/tomak79h -km vial
 ```
 
-또는 `make era/sirind/tomak79h:vial`. 평소 쓰시던 쪽이면 됩니다.
+or `make era/sirind/tomak79h:vial`. Whichever you normally use.
 
-**3. 굽기** — 이전에 구울 때와 같은 방법입니다. `.uf2` 면 부트로더로 들어간
-드라이브에 끌어다 놓고, `.hex` 면 QMK Toolbox 로. 스플릿이지만 **좌우에 같은
-펌웨어**를 구우면 어느 쪽을 꽂아도 됩니다.
+**3. Flash** — the same way as last time. A `.uf2` goes onto the drive the
+bootloader puts up; a `.hex` goes through QMK Toolbox. It is a split, but
+flashing **both halves with the same firmware** means either one works
+plugged in.
 
-## 빌드가 깨지면
+## If the build breaks
 
-이 vial-qmk 는 최신 QMK 보다 오래돼서 이름이 다르거나 없는 것이 있을 수
-있습니다. 실제로 전에 `RAW_EPSIZE` 가 없어서 `rawkey.c` 에 대체 정의를
-넣었습니다 (지금도 파일 안에 있습니다).
+This vial-qmk is older than current QMK, so names may differ or be missing.
+`RAW_EPSIZE` was missing once already, and `rawkey.c` carries a fallback
+definition for it to this day.
 
-v3 에서 새로 쓰는 것들입니다. 깨지면 이 중 하나입니다.
+These are what v3 and v4 reach for. A break will be one of them.
 
-| 쓰는 것 | 어디 있나 / 대안 |
+| used | where it lives / what else |
 |---|---|
-| `#include "action_util.h"` | 없으면 `quantum.h` 나 `host.h` 로 |
-| `keyboard_report` | `action_util.h` 의 `extern report_keyboard_t *keyboard_report;` |
-| `add_key` / `del_key` / `send_keyboard_report` | 같은 헤더 |
-| `keymap_config.nkro` | `eeconfig.h`. `NKRO_ENABLE` 일 때만 씁니다 |
-| `nkro_report` / `NKRO_REPORT_BITS` | 새 QMK(이 vial-qmk 포함). NKRO 가 `keyboard_report` 와 따로 담깁니다 |
-| `keyboard_report->nkro` / `KEYBOARD_REPORT_BITS` | 옛 QMK. `NKRO_REPORT_BITS` 가 없으면 이쪽으로 갑니다 |
-| `usb_device_state_get_protocol()` | 새 QMK. 옛 QMK 는 `keyboard_protocol` |
-| `KEYBOARD_REPORT_KEYS` | 6KRO 리포트의 키 칸 수 (보통 6) |
-| `host_keyboard_send` / `host_nkro_send` | v4. `host.h`. 장치별로 리포트를 직접 보냅니다 |
-| `add_key_bit` | v4. `report.h`. NKRO 리포트에 키 하나를 적습니다 |
-| `IS_QK_MODS` / `QK_MODS_GET_MODS` 등 | v4. `keycodes.h`, `quantum_keycodes.h` |
+| `#include "action_util.h"` | try `quantum.h` or `host.h` if absent |
+| `keyboard_report` | `extern report_keyboard_t *keyboard_report;` in `action_util.h` |
+| `add_key` / `del_key` / `send_keyboard_report` | same header |
+| `keymap_config.nkro` | `eeconfig.h`. Only used under `NKRO_ENABLE` |
+| `nkro_report` / `NKRO_REPORT_BITS` | newer QMK, this vial-qmk included. NKRO is kept apart from `keyboard_report` |
+| `keyboard_report->nkro` / `KEYBOARD_REPORT_BITS` | older QMK. Taken when `NKRO_REPORT_BITS` is absent |
+| `usb_device_state_get_protocol()` | newer QMK. Older QMK has `keyboard_protocol` |
+| `KEYBOARD_REPORT_KEYS` | how many key slots the 6KRO report has (usually 6) |
+| `host_keyboard_send` / `host_nkro_send` | v4. `host.h`. Sends a report to one device directly |
+| `add_key_bit` | v4. `report.h`. Writes one key into an NKRO report |
+| `IS_QK_MODS` / `QK_MODS_GET_MODS` and so on | v4. `keycodes.h`, `quantum_keycodes.h` |
 
-v4 가 깨지는데 고치기 어려우면 `config.h` 에 `RAWKEY_SAME_DEVICE` 를 정의해
-v3 처럼 같은 장치로 치게 할 수 있습니다. 그 경우 반복형/채널링 스킬 중
-하나는 끊깁니다 (README 참고).
+If v4 breaks and is hard to fix, defining `RAWKEY_SAME_DEVICE` in `config.h`
+types the one way, as v3 did. Either the repeating skill or the channelled one
+ends then (see README).
 
-**NKRO 분기를 들어내면 안 됩니다.** NKRO 가 켜져 있으면 눌린 키는 NKRO
-리포트에만 있고 6KRO 리포트는 비어 있어서, 빌드는 되지만 반복이 하나도
-되살아나지 않습니다.
+**Do not take the NKRO branch out.** With NKRO on, a held key is only in the
+NKRO report and the 6KRO one is empty: it builds, and not one repeat comes
+back.
 
-**고친 내용은 저장소 쪽 파일에도 그대로 반영해 주세요.** 안 그러면 다음에
-또 같은 데서 깨집니다.
+**Put whatever you fixed back into the repository's copy.** Otherwise the next
+build breaks in the same place.
 
-## 구운 뒤 확인
+## After flashing
 
-**1. 버전** — TalesHelper 안에는 확인 버튼이 없습니다. 파이썬으로 직접
-물어봅니다.
+**1. Version** — TalesHelper has no button for this. Ask in Python.
 
 ```bash
 python -c "import sys; sys.path.insert(0, r'C:\project\tales-pip'); import tales_helper as t; print(t.KeyboardLink().ping())"
@@ -102,34 +106,37 @@ python -c "import sys; sys.path.insert(0, r'C:\project\tales-pip'); import tales
 (True, '연결됨 (VID 4552 PID 0014, 펌웨어 v4, NKRO 쪽)')
 ```
 
-버전이 그대로면 안 구워진 것이고, `수신기가 없습니다` 가 뜨면 `SRC +=
-rawkey.c` 가 빠졌거나 `raw_hid_receive_kb` 가 두 번 정의된 것입니다.
+The program answers in Korean. An unchanged version means it was not
+flashed, and `수신기가 없습니다` ("no receiver") means `SRC += rawkey.c` is
+missing, or `raw_hid_receive_kb` is defined twice.
 
-**2. 누른 채로** — 게임을 앞에 두고 **숫자 키를 누르고 있는 채로** 사이드
-버튼 고리를 한 번 쓰세요. 반복형 스킬도, 채널링 스킬도 끊기지 않아야 합니다.
+**2. While a key is held** — with the game in front, **hold a number key** and
+use the wheel button ring once. Neither the repeating skill nor the channelled
+one should end.
 
-**3. 어느 장치로 나가는지** — 위 핑 답의 끝에 붙습니다. `NKRO 쪽` 이나
-`6KRO 쪽` 이면 손이 쓰지 않는 장치로 치고 있다는 뜻이고, 그래야 누르고 있던
-키의 자동 반복을 빼앗지 않습니다. `같은 장치` 면 v3 처럼 동작합니다.
+**3. Which device it goes out on** — at the end of that ping's answer.
+`NKRO 쪽` or `6KRO 쪽` ("the NKRO / 6KRO one") means it is typing on the device
+the hand is not using, which is what keeps it from taking the held key's
+auto-repeat. `같은 장치` ("the same device") behaves as v3 did.
 
-누르고 있던 키의 `뗌` / `누름` 한 쌍이 같은 순간에 찍히면 되살리기가 켜진
-채로 구운 것입니다. 채널링 스킬이 거기서 끊깁니다.
+An up/down pair on the held key at that same moment means it was flashed with
+the repeat restore on. A channelled skill ends there.
 
-## VIAL_INSECURE (아직 결정 안 함)
+## VIAL_INSECURE (undecided)
 
-`rules.mk` 에 `VIAL_INSECURE = yes` 가 들어 있습니다. 이 문서의 앞선 판에는
-"켜 두면 아무 프로그램이나 키맵을 읽고 바꿀 수 있다" 고 적혀 있었는데,
-**과장이었습니다.** 실제로 잠금을 켜도 키맵 읽기와 쓰기는 그대로 됩니다.
+`rules.mk` carries `VIAL_INSECURE = yes`. An earlier draft of this page said
+leaving it on lets any program read and change the keymap, which **overstated
+it.** Reading and writing the keymap work with the lock on.
 
-잠금이 막는 것은 매트릭스 읽기, 매크로 변경, `QK_BOOT` 배치, 부트로더
-진입뿐입니다. 그리고 끄고 빌드하려면 `VIAL_UNLOCK_COMBO_ROWS` /
-`VIAL_UNLOCK_COMBO_COLS` 를 정해 주어야 합니다.
+The lock covers reading the matrix, changing macros, placing `QK_BOOT`, and
+entering the bootloader, and nothing else. Building with it off also needs
+`VIAL_UNLOCK_COMBO_ROWS` / `VIAL_UNLOCK_COMBO_COLS` chosen.
 
-rawkey 동작에는 어느 쪽이든 영향이 없습니다. 급한 일이 아닙니다.
+Neither way affects how rawkey behaves. Nothing urgent.
 
-## 돌아와서 알려줄 것
+## What to report back
 
-- 위 핑이 답한 문구
-- 1 을 누른 채로 고리를 썼을 때 스킬이 끊겼는지
-- 빌드 중에 고친 것이 있으면 무엇을 어떻게
-- `VIAL_INSECURE` 를 꺼도 되던지
+- what the ping above answered
+- whether a skill ended when the ring was used with 1 held down
+- anything fixed during the build, and how
+- whether `VIAL_INSECURE` can be turned off

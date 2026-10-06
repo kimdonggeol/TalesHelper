@@ -1,12 +1,13 @@
-/* rawkey - 로우 HID 로 받은 키를 키보드가 직접 칩니다.
+/* rawkey - types the keys it is handed over raw HID.
  *
- * 누름과 뗌을 따로 둔 이유: tap_code16 은 둘 사이가 TAP_CODE_DELAY 인데
- * 기본값이 0 인 빌드가 많아서, 한 프레임에 한 번 입력을 읽는 게임은 못
- * 보고 지나갑니다. 얼마나 눌러 둘지는 PC 쪽이 정합니다.
+ * Press and release are separate commands because tap_code16 leaves
+ * TAP_CODE_DELAY between them, which is 0 in a good many builds: a game that
+ * reads input once a frame sees nothing at all. How long to hold is the PC's
+ * business.
  *
- * 설치: rules.mk 에 RAW_ENABLE = yes (Vial 이면 이미 켜짐), SRC += rawkey.c
- * 받는 함수를 이미 쓰고 있다면 config.h 에 RAWKEY_NO_HOOK 을 정의하고
- * 그 함수 안에서 rawkey_receive() 를 부르세요.
+ * Installing: RAW_ENABLE = yes in rules.mk (Vial already has it), and
+ * SRC += rawkey.c. If something already owns the receiving function, define
+ * RAWKEY_NO_HOOK in config.h and call rawkey_receive() from it.
  */
 
 #include QMK_KEYBOARD_H
@@ -19,33 +20,36 @@
 #    include "usb_device_state.h"
 #endif
 
-/* 옛 QMK(지금의 vial-qmk 포함)는 raw_hid.h 에 RAW_EPSIZE 가 없습니다. */
+/* Older QMK, which is what vial-qmk still is, has no RAW_EPSIZE in
+ * raw_hid.h. */
 #ifndef RAW_EPSIZE
 #    define RAW_EPSIZE 32
 #endif
 
-/* 눌러 둔 것들. PC 가 뗌을 못 보내고 죽어도 다음 누름이 앞의 것을
- * 정리합니다. 여럿인 이유는 한 번에 같이 눌러야 하는 경우가 있어서입니다
- * — 하나씩 보내면 앞의 것이 떨어져 마지막 하나만 남습니다. */
+/* What is being held. If the PC dies without sending the release, the next
+ * press clears it. There is room for several because some keys have to go
+ * down together - sent one at a time, each press drops the one before it and
+ * only the last survives. */
 static uint16_t rawkey_held[RAWKEY_HELD_MAX];
-static bool     rawkey_held_apart[RAWKEY_HELD_MAX]; /* 따로 된 키보드로 보냈는지 */
+static bool     rawkey_held_apart[RAWKEY_HELD_MAX]; /* sent on the other device */
 static uint8_t  rawkey_held_count = 0;
 
-/* 어느 키보드 장치로 칠지.
+/* Which keyboard device to type on.
  *
- * NKRO 를 넣고 빌드하면 키보드가 호스트에 장치를 둘 내놓습니다. 6KRO
- * (부트) 키보드와 NKRO 키보드이고, 손가락이 치는 키는 그중 하나로만
- * 나갑니다. 우리 키를 놀고 있는 다른 하나로 내보내면, 호스트에게는 다른
- * 키보드에서 온 키가 됩니다. 윈도우는 자동 반복을 장치마다 따로 돌리므로
- * 손가락이 누르고 있는 키의 반복을 빼앗지 않습니다 - 되살릴 일도, 그
- * 키의 뗌을 보일 일도 없습니다.
+ * Built with NKRO, the keyboard offers the host two devices: the 6KRO (boot)
+ * keyboard and the NKRO one, and the keys from the hand only ever come out of
+ * one of them. Sending ours out the idle one makes them, to the host, keys
+ * from a different keyboard. Windows runs the auto-repeat per device, so ours
+ * does not take the repeat away from the key the hand is holding - nothing to
+ * hand back, and no release of that key for anyone to see.
  *
- * 부트 프로토콜(BIOS 등)이면 NKRO 장치가 없으니 같은 길로 칩니다. */
+ * Under the boot protocol (a BIOS, say) there is no NKRO device, so we type
+ * the same way the hand does. */
 enum { RAWKEY_VIA_SAME, RAWKEY_VIA_6KRO, RAWKEY_VIA_NKRO };
 static uint8_t rawkey_via = RAWKEY_VIA_SAME;
 
-/* 키보드 펌웨어가 손가락의 키를 직접 다른 장치로 돌려 보낼 때 쓰는 자리
- * (rawkey_apart_press). PC 가 보낸 키와 같은 리포트에 함께 실립니다. */
+/* Room for the keyboard's own code to send a key of the hand's out the other
+ * device (rawkey_apart_press). It rides in the same report as the PC's keys. */
 static uint8_t rawkey_extra[RAWKEY_HELD_MAX];
 static uint8_t rawkey_extra_count = 0;
 
@@ -60,8 +64,9 @@ static uint8_t rawkey_pick_via(void) {
 #endif
 }
 
-/* 따로 보낼 수 있는 키인지. 기본 키와 수정자, 그리고 수정자를 얹은 기본
- * 키만 리포트에 직접 적을 수 있습니다. 나머지는 같은 길로 칩니다. */
+/* Whether the key can go out on its own. Only basic keycodes, modifiers, and
+ * a basic keycode with modifiers on it can be written into a report
+ * directly. Everything else is typed the way the hand types. */
 static bool rawkey_plain(uint16_t code) {
     if (IS_QK_BASIC(code)) {
         return IS_BASIC_KEYCODE(code) || IS_MODIFIER_KEYCODE(code);
@@ -70,8 +75,8 @@ static bool rawkey_plain(uint16_t code) {
 }
 
 #if defined(NKRO_ENABLE) && defined(NKRO_REPORT_BITS)
-/* 따로 보낸 키들로 그 장치의 리포트를 처음부터 다시 만들어 보냅니다. 키가
- * 열 개를 넘지 않으니 매번 새로 만드는 쪽이 단순합니다. */
+/* Builds that device's report from scratch out of the keys sent apart. There
+ * are never more than ten, so rebuilding every time is the simpler thing. */
 static void rawkey_send_apart(void) {
     uint8_t mods = 0;
     uint8_t keys[RAWKEY_HELD_MAX * 2];
@@ -106,7 +111,7 @@ static void rawkey_send_apart(void) {
         }
         host_nkro_send(&report);
     } else {
-        /* 6KRO 는 여섯 칸까지만 담깁니다. 넘치는 것은 버려집니다. */
+        /* 6KRO holds six. Anything past that is dropped. */
         static report_keyboard_t report;
         memset(&report, 0, sizeof(report));
         report.mods = mods;
@@ -193,25 +198,26 @@ void rawkey_apart_release(uint8_t key) {
 #endif
 }
 
-/* 우리 키를 떼고 나면, 손가락이 누르고 있던 키의 자동 반복이 죽습니다.
+/* Letting go of our key kills the auto-repeat on the key the hand is holding.
  *
- * 윈도우는 반복을 가장 최근에 눌린 키 하나에만 걸어 줍니다. 우리가 보낸
- * 키가 그것을 가져가고, 떼면 반복이 그냥 멈춥니다 - 아직 눌려 있는 키로
- * 돌아오지 않습니다. 키를 누른 채로 무언가 나가고 있었다면 거기서 끊깁니다.
+ * Windows gives the repeat to the most recently pressed key and to no other.
+ * The key we sent takes it, and letting go stops the repeat rather than
+ * handing it back to the key still held down. Whatever was going out while
+ * that key was held stops there.
  *
- * 되살리려면 그 키에 새 누름 전환을 만들어 주어야 합니다. 리포트에서 한 번
- * 빼고 다시 넣으면 호스트가 새로 눌린 것으로 보고 반복을 거기로 되돌립니다.
- * 어느 키가 눌려 있는지는 리포트가 이미 알고 있으므로 PC 가 알려줄 필요가
- * 없습니다. 우리 키를 먼저 뗀 다음에 들여다보기 때문에 그 안에는 손가락이
- * 쥐고 있는 것만 남습니다. */
+ * Getting it back means making a fresh press of that key: take it out of the
+ * report and put it straight back, and the host reads that as newly pressed
+ * and follows with the repeat. Which keys are held is something the report
+ * already knows, so the PC need not say. We look after letting go of our own,
+ * so what is left in there is only what the hand is holding. */
 void rawkey_restore_repeat(void) {
     uint8_t held[RAWKEY_HELD_MAX];
     uint8_t count = 0;
 
 #if defined(NKRO_ENABLE)
-    /* add_key() 가 NKRO 리포트에 넣는 조건과 같아야 키가 실제로 담긴 쪽을
-     * 읽습니다. 새 QMK(지금의 vial-qmk 포함)는 NKRO 가 따로 nkro_report 에
-     * 담기고, 옛 QMK 는 keyboard_report 안의 nkro 에 담깁니다. */
+    /* This has to match where add_key() puts a key, or we read the wrong
+     * report. Newer QMK, vial-qmk included, keeps NKRO in its own
+     * nkro_report; older QMK keeps it in keyboard_report's nkro. */
 #    if defined(NKRO_REPORT_BITS)
     if (usb_device_state_get_protocol() == USB_PROTOCOL_REPORT && keymap_config.nkro) {
         uint8_t *bits = nkro_report->bits;
@@ -268,8 +274,9 @@ bool rawkey_receive(uint8_t *data, uint8_t length) {
             return true;
 
         case RAWKEY_CHORD: {
-            /* data[1] 이 개수, 그다음부터 키코드가 둘씩 이어집니다. 한
-             * 리포트 안에서 전부 눌러야 호스트에 한 번에 나갑니다. */
+            /* data[1] is the count, and the keycodes follow two bytes each.
+             * They all have to go down inside one report to reach the host
+             * together. */
             uint8_t count = data[1];
             if (2 + count * 2 > length) {
                 return true;
@@ -282,15 +289,16 @@ bool rawkey_receive(uint8_t *data, uint8_t length) {
         }
 
         case RAWKEY_RELEASE:
-            /* 우리가 누른 것만 쥐고 있으므로, 하나를 집어 떼든 통째로
-             * 떼든 결과가 같습니다. */
+            /* We only ever hold what we pressed, so picking one out and
+             * dropping the lot come to the same thing. */
             rawkey_release();
 #ifdef RAWKEY_RESTORE_REPEAT
-            /* 기본으로는 하지 않습니다. 되살리느라 호스트에 그 키의 뗌이 한
-             * 번 보이는데, 누르고 있는 동안만 이어지는 채널링 스킬은 그
-             * 뗌에서 끊깁니다. 다른 장치로 치면(v4) 반복을 빼앗지 않으므로
-             * 되살릴 일 자체가 없습니다. 같은 장치로만 칠 수 있을 때를 위해
-             * 남겨 둡니다. */
+            /* Off by default. Handing the repeat back shows the host that
+             * key going up once, and a channelled skill - one that lasts
+             * only while the key is held - ends right there. Typing on the
+             * other device (v4) never takes the repeat, so there is nothing
+             * to hand back. This stays for the builds that can only type the
+             * one way. */
             rawkey_restore_repeat();
 #endif
             return true;
@@ -299,7 +307,7 @@ bool rawkey_receive(uint8_t *data, uint8_t length) {
             uint8_t reply[RAW_EPSIZE] = {0};
             reply[0] = RAWKEY_PING;
             reply[1] = RAWKEY_VERSION;
-            /* 다음 키를 어느 장치로 칠지: 0 같은 길, 1 6KRO, 2 NKRO */
+            /* Which device the next key goes out on: 0 the same one, 1 6KRO, 2 NKRO */
             reply[2] = (rawkey_held_count || rawkey_extra_count) ? rawkey_via : rawkey_pick_via();
             raw_hid_send(reply, sizeof(reply));
             return true;
@@ -310,8 +318,8 @@ bool rawkey_receive(uint8_t *data, uint8_t length) {
 
 #ifndef RAWKEY_NO_HOOK
 #    ifdef VIA_ENABLE
-/* VIA/Vial 이 자기가 모르는 명령을 넘겨 주는 자리입니다. 우리 것도
- * 아니면 원래대로 모르는 명령이라고 표시해 돌려보냅니다. */
+/* Where VIA and Vial hand over a command they do not know. If it is not ours
+ * either, mark it unhandled again and send it back as they would. */
 #        include "via.h"
 void raw_hid_receive_kb(uint8_t *data, uint8_t length) {
     if (!rawkey_receive(data, length)) {
@@ -319,7 +327,7 @@ void raw_hid_receive_kb(uint8_t *data, uint8_t length) {
     }
 }
 #    else
-/* VIA/Vial 이 없으면 로우 HID 는 전부 이 함수로 옵니다. */
+/* Without VIA or Vial, every raw HID report arrives here. */
 void raw_hid_receive(uint8_t *data, uint8_t length) {
     rawkey_receive(data, length);
 }

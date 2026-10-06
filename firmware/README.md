@@ -1,35 +1,37 @@
-# rawkey — 키보드가 직접 치게 하기
+# rawkey — let the keyboard do the typing
 
-휠 버튼 메뉴와 버튼별 키가 보내는 키를 TalesHelper 가 `SendInput` 으로 넣는 대신,
-**쓰고 있는 QMK · Vial 키보드에게 그 키를 치라고 시키는** 방법입니다.
-흉내가 아니라 실제로 그 키보드가 보내는 입력이 됩니다.
+Instead of TalesHelper putting the keys from the wheel button menu and the
+per-button keys in with `SendInput`, this **asks the QMK or Vial keyboard you
+are already using to type them**. Not an imitation: the input really does come
+from that keyboard.
 
-안 구워도 프로그램은 그대로 돌아갑니다. 쓰고 싶을 때만 보세요.
+The program works without it. Come here only if you want it.
 
 ```
 rawkey/rawkey.c
 rawkey/rawkey.h
 ```
 
-## 왜
+## Why
 
-`SendInput` 으로 넣은 키에는 운영체제가 주입 표를 남깁니다. 저수준 훅에
-`INJECTED` 플래그가 붙고, 원시 입력에는 보낸 장치가 없어서 `hDevice` 가
-`0` 으로 옵니다. 둘 다 `SendInput` 호출 시점에 커널이 직접 박는 값이라
-프로세스 쪽에서는 손댈 수 없습니다.
+A key put in with `SendInput` carries the operating system's injection marks.
+The low-level hook gets the `INJECTED` flag, and raw input has no sending
+device, so `hDevice` arrives as `0`. The kernel writes both at the moment
+`SendInput` is called, and no process can touch them.
 
-키보드가 치면 그런 표가 남을 이유가 없습니다. 손가락으로 친 것과 같은
-길로 올라오고, 원시 입력에 그 키보드의 VID/PID 가 찍힙니다.
+A key the keyboard types has no reason to carry any of that. It comes up the
+same way a key pressed by hand does, and raw input shows that keyboard's
+VID/PID.
 
-덤으로 조합키 처리가 깔끔해집니다. `SendInput` 쪽은 게임이 한 프레임에 한
-번만 입력을 읽는 탓에 수정자와 키를 20ms 씩 떼어 보내고 있는데, 펌웨어의
-`register_code16` 은 그 순서를 알아서 맞춥니다.
+Modifiers get simpler as a bonus. The `SendInput` path has to space the
+modifier and the key 20ms apart, because a game reads its input once a frame;
+the firmware's `register_code16` gets the order right by itself.
 
-굽는 순서와 확인 방법은 [BUILD.md](BUILD.md) 에 따로 적어 두었습니다.
+How to build and flash is written out separately in [BUILD.md](BUILD.md).
 
-## 넣는 법
+## Installing
 
-1. `rawkey.c` 와 `rawkey.h` 를 keymap 폴더에 둡니다.
+1. Put `rawkey.c` and `rawkey.h` in the keymap folder.
 
 2. **`rules.mk`**
 
@@ -37,140 +39,140 @@ rawkey/rawkey.h
    SRC += rawkey.c
    ```
 
-   `RAW_ENABLE = yes` 는 Vial 이 이미 켜 두므로 따로 넣지 않아도 됩니다.
-   Vial 앱이 키맵을 주고받는 그 통로를 같이 씁니다.
+   `RAW_ENABLE = yes` is already on in Vial, so it need not be added. We share
+   the channel the Vial app uses to pass keymaps back and forth.
 
-3. 빌드해서 굽습니다.
+3. Build and flash.
 
-이미 `raw_hid_receive_kb` 를 쓰고 있다면 기본 훅과 두 번 정의되어 링크가
-깨집니다. 그때는 `config.h` 에 `RAWKEY_NO_HOOK` 을 정의하고, 쓰던 함수
-안에서 `rawkey_receive()` 를 부르세요. 돌려주는 값이 `false` 면 rawkey 의
-명령이 아니니 원래 하던 처리를 이어가면 됩니다.
+If something already owns `raw_hid_receive_kb`, it and the built-in hook are
+defined twice and the link breaks. Define `RAWKEY_NO_HOOK` in `config.h` and
+call `rawkey_receive()` from the function you already have. A `false` back
+means it was not a rawkey command, so carry on with whatever you were doing.
 
-명령 ID `0x40~0x42` 가 다른 모듈과 부딪히면 `RAWKEY_PRESS` 등을 빌드 때
-바꿀 수 있습니다. 그때는 PC 쪽 `tales_helper.py` 의 `TH_PRESS` 도 같이
-바꾸세요.
+If the command ids `0x40`–`0x43` collide with another module, `RAWKEY_PRESS`
+and friends can be changed at build time. Change `TH_PRESS` in the PC's
+`tales_helper.py` to match.
 
-## 확인
+## Checking it works
 
-구워 두면 TalesHelper 가 알아서 씁니다. 켜고 끄는 설정은 없습니다 -
-키보드가 없거나 수신기가 없으면 원래 방식으로 보내므로, 물어볼 것이 없기
-때문입니다.
+Once it is flashed TalesHelper uses it on its own. There is no switch — with
+no keyboard, or no receiver, it sends the old way, so there is nothing to ask.
 
-제대로 들어갔는지는 밖에서 봅니다. 저장소 밖의 `input-origin` 도구로 고리
-키를 받아 보면, 구우기 전에는 `소프트웨어 주입`, 구운 뒤에는 키보드의
-VID/PID 와 함께 `하드웨어` 로 나와야 맞습니다.
-
-켜 두었는데 키보드를 뽑았거나 수신기가 없거나 보낼 수 없는 키면,
-**조용히 원래 방식으로 돌아갑니다.** 고리는 그대로 동작합니다.
-
-같은 저장소 밖의 `input-origin` 도구로 실제로 어떻게 잡히는지 눈으로 볼
-수 있습니다. 실측한 결과입니다.
+Whether it went in is something you see from outside. Take a ring key with the
+`input-origin` tool, outside this repository: before flashing it reads as
+injected software, and after flashing as hardware, with the keyboard's
+VID/PID. Measured:
 
 ```
-입력                저수준 훅   원시 입력             판정
-키 Shift 누름        없음       VID 4552 PID 0014   하드웨어       ← rawkey
-키 M 누름            없음       VID 4552 PID 0014   하드웨어       ← rawkey
-키 M 뗌             없음       VID 4552 PID 0014   하드웨어       ← rawkey
-키 Shift 뗌          없음       VID 4552 PID 0014   하드웨어       ← rawkey
-키 F13 누름          없음       장치 없음             소프트웨어 주입  ← SendInput
+input              low-level hook   raw input             verdict
+Shift down         none             VID 4552 PID 0014     hardware     <- rawkey
+M down             none             VID 4552 PID 0014     hardware     <- rawkey
+M up               none             VID 4552 PID 0014     hardware     <- rawkey
+Shift up           none             VID 4552 PID 0014     hardware     <- rawkey
+F13 down           none             no device             injected     <- SendInput
 ```
 
-## 프로토콜
+Unplug the keyboard, or flash something without the receiver, or ask for a key
+it cannot send, and it **falls back quietly**. The ring keeps working.
 
-32바이트 리포트. 맨 앞 한 바이트는 윈도우가 요구하는 리포트 ID(`0x00`)라,
-펌웨어가 보는 `data[0]` 은 그다음 바이트입니다.
+## Protocol
 
-| `data[0]` | `data[1..2]` | 하는 일 |
+A 32-byte report. The first byte is the report id Windows insists on (`0x00`),
+so the firmware's `data[0]` is the one after it.
+
+| `data[0]` | `data[1..2]` | does |
 |---|---|---|
-| `0x40` | QMK 키코드 (little endian) | 누릅니다 |
-| `0x41` | 같음, `0` 이면 눌린 것 아무거나 | 뗍니다 |
-| `0x42` | — | `0x42, 버전` 으로 답합니다 |
-| `0x43` | `data[1]` 이 개수, 그다음부터 키코드가 둘씩 | 전부 한꺼번에 누릅니다 |
+| `0x40` | QMK keycode (little endian) | presses |
+| `0x41` | same, `0` for whatever is held | releases |
+| `0x42` | — | answers `0x42, version` |
+| `0x43` | `data[1]` is the count, then keycodes two bytes each | presses them all together |
 
-`0x43` 은 v2 부터입니다. v1 수신기는 이 명령을 모르므로 PC 가 핑으로 받은
-버전을 보고 알아서 `SendInput` 으로 보냅니다.
+`0x43` arrived in v2. A v1 receiver does not know it, so the PC reads the
+version from a ping and sends with `SendInput` instead.
 
-키를 여럿 같이 눌러야 할 때 `0x40` 을 여러 번 보내면 안 됩니다. 누를 때마다
-앞의 것을 떼기 때문에 마지막 하나만 남습니다. 한 리포트 안에서 다 눌러야
-호스트에 한 번에 나갑니다.
+Do not send `0x40` several times to hold several keys. Each press lets go of
+the one before it and only the last survives. They have to go down inside one
+report to reach the host together.
 
-누름과 뗌을 나눈 이유는 `tap_code16` 의 `TAP_CODE_DELAY` 가 0 인 빌드가
-많아서입니다. 그러면 USB 프레임 한두 개 안에 눌렀다 떼는 게 끝나서, 한
-프레임에 한 번 입력을 읽는 게임이 통째로 놓칩니다. 얼마나 눌러 둘지는 PC
-쪽이 정합니다 (`BOARD_HOLD_MS`, 기본 40ms).
+Press and release are separate because `TAP_CODE_DELAY` is 0 in a good many
+builds. The key would then go down and up inside a USB frame or two, and a
+game that reads input once a frame misses the lot. How long to hold is the
+PC's business (`BOARD_HOLD_MS`, 40ms by default).
 
-눌러 둘 수 있는 키는 `RAWKEY_HELD_MAX` 개(기본 10)까지입니다.
-프로그램을 끝낼 때 눌러 둔 것이 있으면 떼고
-나갑니다. 그럴 틈도 없이 죽은 경우에는 키보드가 그 키를 누른 채로 남는데,
-다음 누름이 앞의 것을 정리하므로 그 상태가 이어지지는 않습니다.
+Up to `RAWKEY_HELD_MAX` keys (10) can be held. Closing the program lets go of
+anything still down. Where it dies without the chance, the keyboard is left
+holding that key, but the next press clears it, so the state does not carry.
 
-### 눌러 둔 키의 자동 반복
+### The auto-repeat on a key being held
 
-키는 떨어지지 않지만 **자동 반복이 죽습니다.** 윈도우는 반복을 가장 최근에
-눌린 키 하나에만 걸어 주는데, 키보드가 보낸 키는 진짜 키라서 반복을
-가져가고, 떼면 반복이 그냥 멈춥니다 — 아직 눌려 있는 키로 돌아오지 않습니다.
-키를 누른 채로 무언가 나가고 있었다면 거기서 끊깁니다. 주입된 키는 그
-상태기계에 아예 끼어들지 않아서 이 문제가 없었습니다. 재어 본 값입니다.
+The key does not come up, but its **auto-repeat dies.** Windows gives the
+repeat to the most recently pressed key and to no other; a key the keyboard
+sends is a real key, so it takes the repeat, and letting go stops it rather
+than handing it back to the key still held down. Whatever was going out while
+that key was held stops there. Injected keys never enter that state machine,
+which is why the problem did not exist before. Measured:
 
-| 끼워 넣은 키 | 그 뒤 반복 |
+| key dropped in | repeats after |
 |---|---|
-| 키보드가 보낸 진짜 키 | 0 회 (멈춤) |
-| `SendInput` 으로 넣은 키 | 71 회 (4ms 만에 이어짐) |
+| a real key from the keyboard | 0 (stops) |
+| a key put in with `SendInput` | 71 (back within 4ms) |
 
-게임에서도 숫자 키를 누른 채로 쓰는 **반복형 스킬이 거기서 끊깁니다.**
+In the game this ends a **repeating skill** held on a number key.
 
-`rawkey_restore_repeat()` 는 뗀 직후에 **눌려 있던 키를 리포트에서 한 번
-뺐다 다시 넣어** 반복을 되돌립니다. 반복형 스킬은 살지만, 호스트에 그 키의
-뗌이 한 번 보여서 **누르고 있는 동안만 이어지는 채널링 스킬은 그 뗌에서
-끊깁니다.** 같은 장치로 치는 한 둘 중 하나는 포기해야 합니다.
+`rawkey_restore_repeat()` hands the repeat back by **taking the held key out
+of the report and putting it straight back**. The repeating skill survives,
+but the host sees that key go up once, so a **channelled skill — one that
+lasts only while the key is held — ends at that release.** Typing on the one
+device means giving up one or the other.
 
-### v4: 다른 키보드 장치로 칩니다
+### v4: types on the other keyboard device
 
-NKRO 를 넣고 빌드하면 키보드가 호스트에 키보드 장치를 둘 내놓습니다.
-6KRO(`MI_00`)와 NKRO(`MI_02&COL04`)이고, 손가락이 치는 키는 그중 하나로만
-나갑니다. v4 는 **우리 키를 놀고 있는 다른 하나로 보냅니다.** 윈도우는 자동
-반복을 장치마다 따로 돌리므로 손가락이 누르고 있는 키의 반복을 빼앗지 않고,
-되살릴 일도 그 키의 뗌을 보일 일도 없습니다. 하드웨어는 그대로입니다.
+Built with NKRO, the keyboard offers the host two keyboard devices: 6KRO
+(`MI_00`) and NKRO (`MI_02&COL04`), and the keys from the hand only ever come
+out of one of them. v4 **sends ours out the idle one.** Windows runs the
+auto-repeat per device, so ours does not take the repeat from the key the hand
+is holding — nothing to hand back, and no release of that key for anyone to
+see. The hardware is unchanged.
 
-| 2(채널링) 또는 1(반복형)을 누른 채로 고리 | 2 | 1 |
+| ring, while holding 2 (channelled) or 1 (repeating) | 2 | 1 |
 |---|---|---|
-| 손으로 I | 이어짐 | — |
-| `SendInput` | 이어짐 | 이어짐 |
-| v3, 같은 장치, 되살리기 있음 | **끊김** (2 뗌/누름) | — |
-| v3, 같은 장치, 되살리기 없음 | 이어짐 | **끊김** (반복 멈춤) |
-| **v4, 다른 장치** | 이어짐 | 이어짐 |
+| I by hand | survives | — |
+| `SendInput` | survives | survives |
+| v3, same device, restore on | **ends** (2 up/down) | — |
+| v3, same device, restore off | survives | **ends** (repeat stops) |
+| **v4, other device** | survives | survives |
 
-NKRO 설정이 꺼져 있으면 손 → 6KRO, 우리 → NKRO 이고, 켜져 있으면 반대입니다.
-우리가 6KRO 쪽이면 한 번에 여섯 키까지만 담깁니다. 부트 프로토콜(BIOS 등)
-에서는 NKRO 장치가 없어 같은 장치로 칩니다. 핑 답의 세 번째 바이트가 지금
-쓰는 장치입니다 (0 같은 장치, 1 6KRO, 2 NKRO). `RAWKEY_SAME_DEVICE` 를
-정의하면 v3 처럼 같은 장치로만 칩니다.
+With NKRO off it is hand → 6KRO, ours → NKRO; with it on, the other way
+round. On the 6KRO side only six keys fit in one report. Under the boot
+protocol (a BIOS, say) there is no NKRO device, so we type the same way the
+hand does. The third byte of a ping's answer is the device in use (0 the same
+one, 1 6KRO, 2 NKRO). Defining `RAWKEY_SAME_DEVICE` types the one way, as v3
+did.
 
-v3 미만이면 PC 가 **누르고 있는 키가 있을 때 키보드를 건너뛰고**
-`SendInput` 으로 보냅니다. v3 부터는 언제든 키보드로 보냅니다.
+Below v3 the PC **skips the keyboard while any key is held** and sends with
+`SendInput`. From v3 on it always goes to the keyboard.
 
-### 핑에는 답이 두 번 옵니다
+### A ping is answered twice
 
-rawkey 가 제 답(`42 01`)을 보내고 나면, VIA 가 받은 리포트를 그대로 한 번
-더 돌려줍니다(`42 00`). 돌려받은 쪽은 버전 자리가 0 입니다. 막을 방법이
-없어서 PC 쪽이 **버전 자리가 0 이 아닌 답이 나올 때까지** 읽습니다. 어느
-쪽이 먼저 도착하든 같은 답이 나옵니다.
+rawkey sends its own answer (`42 01`), and then VIA hands the report it was
+given straight back (`42 00`). The returned one has a zero where the version
+belongs. There is no stopping it, so the PC **reads until an answer carries a
+non-zero version**. Either order gives the same result.
 
-누름과 뗌에도 똑같이 답이 하나씩 돌아오는데, 그쪽 손잡이는 **쓰기 전용으로
-열어** 아예 큐에 쌓이지 않게 합니다.
+Presses and releases come back the same way. That handle is **opened for
+writing only**, so none of it queues up.
 
-## 알아둘 것
+## Worth knowing
 
-- **고리는 여전히 PC 에서 돕니다.** 어느 방향을 골랐는지 판단하는 건 PC 고,
-  키보드는 "이 키 쳐" 를 받아 치는 손가락입니다.
-- **같은 키를 보내면 끊깁니다.** 뗌이 그 키를 리포트에서 지워버리고, 실제로
-  손을 뗐다 다시 누르기 전까지 돌아오지 않습니다. 고리에 거는 키는 평소
-  누르고 있을 키와 겹치지 않게 하세요.
-- **조합키는 그 순간 눌린 키 전체에 걸립니다.** `Shift+M` 을 보내는 동안은
-  같이 눌려 있던 키도 Shift 와 함께 눌린 것으로 보입니다.
-- **마우스 클릭 되돌리기는 그대로 `SendInput` 입니다.** 짧게 눌렀을 때 원래
-  클릭을 돌려주는 그 동작까지 키보드로 보내면, 훅이 자기가 되돌린 것임을
-  알아볼 수 없어 다시 삼키고 또 되돌리는 고리에 빠집니다.
-- **스플릿이면 USB 에 꽂힌 쪽이 받아서 칩니다.** 좌우에 같은 펌웨어를 구우면
-  어느 쪽을 꽂아도 동작합니다.
+- **The ring still runs on the PC.** Deciding which direction was chosen is
+  the PC's job; the keyboard is the finger that types what it is told.
+- **Sending the same key breaks it.** The release wipes that key from the
+  report, and it does not come back until the hand actually lets go and
+  presses again. Keep the ring's keys off the ones you hold.
+- **A modifier applies to everything held at that moment.** While `Shift+M`
+  goes out, a key held alongside it reads as held with Shift.
+- **Putting the mouse click back is still `SendInput`.** Send that from the
+  keyboard too and the hook cannot tell it was the one that put it back, so it
+  swallows it and puts it back again, round and round.
+- **On a split, the half plugged into USB receives and types.** Flash both
+  halves with the same firmware and either one works.

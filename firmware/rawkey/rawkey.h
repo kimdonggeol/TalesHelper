@@ -1,12 +1,13 @@
-/* rawkey - PC 가 로우 HID 로 "이 키 눌러 / 떼" 를 시키면 키보드가 칩니다. */
+/* rawkey - the PC says "press this / let go" over raw HID and the keyboard
+ * does the typing. */
 
 #pragma once
 
 #include <stdbool.h>
 #include <stdint.h>
 
-/* 명령 ID. VIA/Vial 이 쓰는 ID 와 겹치지 않는 자리입니다. 다른 모듈과
- * 부딪히면 빌드할 때 바꿀 수 있습니다. 그때는 PC 쪽도 같이 바꾸세요. */
+/* Command ids, chosen where VIA and Vial do not reach. If something else
+ * wants them, change them at build time - and change the PC side to match. */
 #ifndef RAWKEY_PRESS
 #    define RAWKEY_PRESS 0x40
 #endif
@@ -20,31 +21,35 @@
 #    define RAWKEY_CHORD 0x43
 #endif
 
-/* 한꺼번에 잡고 있을 수 있는 키 수. HID 리포트가 담는 만큼이면 됩니다. */
+/* How many keys can be held at once. As many as the report carries is
+ * plenty. */
 #ifndef RAWKEY_HELD_MAX
 #    define RAWKEY_HELD_MAX 10
 #endif
 
-/* 프로토콜 버전. 핑에 대한 답의 두 번째 바이트로 나갑니다. 세 번째
- * 바이트는 키를 칠 장치입니다 (0 같은 길, 1 6KRO, 2 NKRO).
- * v4: 손가락이 쓰지 않는 쪽 키보드 장치로 칩니다. */
+/* Protocol version, sent as the second byte of the answer to a ping. The
+ * third byte says which device the keys go out on (0 the same one, 1 6KRO,
+ * 2 NKRO).
+ * v4: types on whichever keyboard device the hand is not using. */
 #define RAWKEY_VERSION 0x04
 
-/* 받은 리포트가 rawkey 명령이면 처리하고 true, 아니면 건드리지 않고
- * false 를 돌려줍니다. */
+/* Handles the report and returns true if it was a rawkey command; returns
+ * false and leaves it alone otherwise. */
 bool rawkey_receive(uint8_t *data, uint8_t length);
 
-/* 눌러 둔 키가 있으면 전부 뗍니다. PC 가 보낸 키만 해당합니다. */
+/* Lets go of everything being held. Only of what the PC asked for. */
 void rawkey_release(void);
 
-/* 키보드 쪽 코드가 기본 키 하나를 손가락이 쓰지 않는 쪽 장치로 직접 누르고
- * 뗍니다. PC 가 보낸 키와 같은 리포트에 함께 실립니다. 그 장치가 없으면
- * (부트 프로토콜, NKRO 없는 빌드) rawkey_apart_ready() 가 false 입니다. */
+/* Lets the keyboard's own code press and release one basic key on the
+ * device the hand is not using. It rides in the same report as the keys the
+ * PC sent. Where there is no such device - boot protocol, or a build without
+ * NKRO - rawkey_apart_ready() is false. */
 bool rawkey_apart_ready(void);
 void rawkey_apart_press(uint8_t key);
 void rawkey_apart_release(uint8_t key);
 
-/* 손가락이 누르고 있는 키의 자동 반복을 되살립니다. 그 키의 뗌이 호스트에
- * 한 번 보여 채널링 스킬이 끊기므로, RAWKEY_RESTORE_REPEAT 를 정의했을
- * 때만 뗌 처리에서 부릅니다. v4 처럼 다른 장치로 치면 필요 없습니다. */
+/* Hands the auto-repeat back to the key the hand is still holding. The host
+ * sees that key go up once, which cuts a channelled skill short, so this is
+ * only called on release when RAWKEY_RESTORE_REPEAT is defined. Typing on
+ * the other device, as v4 does, needs none of it. */
 void rawkey_restore_repeat(void);
