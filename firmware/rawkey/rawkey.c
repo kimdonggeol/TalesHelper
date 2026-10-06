@@ -44,6 +44,11 @@ static uint8_t  rawkey_held_count = 0;
 enum { RAWKEY_VIA_SAME, RAWKEY_VIA_6KRO, RAWKEY_VIA_NKRO };
 static uint8_t rawkey_via = RAWKEY_VIA_SAME;
 
+/* 키보드 펌웨어가 손가락의 키를 직접 다른 장치로 돌려 보낼 때 쓰는 자리
+ * (rawkey_apart_press). PC 가 보낸 키와 같은 리포트에 함께 실립니다. */
+static uint8_t rawkey_extra[RAWKEY_HELD_MAX];
+static uint8_t rawkey_extra_count = 0;
+
 static uint8_t rawkey_pick_via(void) {
 #if defined(NKRO_ENABLE) && defined(NKRO_REPORT_BITS) && !defined(RAWKEY_SAME_DEVICE)
     if (usb_device_state_get_protocol() != USB_PROTOCOL_REPORT) {
@@ -69,9 +74,12 @@ static bool rawkey_plain(uint16_t code) {
  * 열 개를 넘지 않으니 매번 새로 만드는 쪽이 단순합니다. */
 static void rawkey_send_apart(void) {
     uint8_t mods = 0;
-    uint8_t keys[RAWKEY_HELD_MAX];
+    uint8_t keys[RAWKEY_HELD_MAX * 2];
     uint8_t count = 0;
 
+    for (uint8_t i = 0; i < rawkey_extra_count; i++) {
+        keys[count++] = rawkey_extra[i];
+    }
     for (uint8_t i = 0; i < rawkey_held_count; i++) {
         if (!rawkey_held_apart[i]) {
             continue;
@@ -133,7 +141,7 @@ static void rawkey_hold(uint16_t code) {
     if (code == KC_NO || rawkey_held_count >= RAWKEY_HELD_MAX) {
         return;
     }
-    if (rawkey_held_count == 0) {
+    if (rawkey_held_count == 0 && rawkey_extra_count == 0) {
         rawkey_via = rawkey_pick_via();
     }
     bool apart = rawkey_via != RAWKEY_VIA_SAME && rawkey_plain(code);
@@ -147,6 +155,42 @@ static void rawkey_hold(uint16_t code) {
     }
 #endif
     register_code16(code);
+}
+
+bool rawkey_apart_ready(void) {
+    return rawkey_pick_via() != RAWKEY_VIA_SAME;
+}
+
+void rawkey_apart_press(uint8_t key) {
+#if defined(NKRO_ENABLE) && defined(NKRO_REPORT_BITS)
+    if (rawkey_extra_count >= RAWKEY_HELD_MAX) {
+        return;
+    }
+    if (rawkey_held_count == 0 && rawkey_extra_count == 0) {
+        rawkey_via = rawkey_pick_via();
+    }
+    rawkey_extra[rawkey_extra_count++] = key;
+    rawkey_send_apart();
+#else
+    (void)key;
+#endif
+}
+
+void rawkey_apart_release(uint8_t key) {
+#if defined(NKRO_ENABLE) && defined(NKRO_REPORT_BITS)
+    for (uint8_t i = 0; i < rawkey_extra_count; i++) {
+        if (rawkey_extra[i] == key) {
+            for (; i + 1 < rawkey_extra_count; i++) {
+                rawkey_extra[i] = rawkey_extra[i + 1];
+            }
+            rawkey_extra_count--;
+            rawkey_send_apart();
+            return;
+        }
+    }
+#else
+    (void)key;
+#endif
 }
 
 /* 우리 키를 떼고 나면, 손가락이 누르고 있던 키의 자동 반복이 죽습니다.
@@ -256,7 +300,7 @@ bool rawkey_receive(uint8_t *data, uint8_t length) {
             reply[0] = RAWKEY_PING;
             reply[1] = RAWKEY_VERSION;
             /* 다음 키를 어느 장치로 칠지: 0 같은 길, 1 6KRO, 2 NKRO */
-            reply[2] = rawkey_held_count ? rawkey_via : rawkey_pick_via();
+            reply[2] = (rawkey_held_count || rawkey_extra_count) ? rawkey_via : rawkey_pick_via();
             raw_hid_send(reply, sizeof(reply));
             return true;
         }

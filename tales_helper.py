@@ -441,6 +441,12 @@ class HotkeyFilter(QAbstractNativeEventFilter):
 user32.GetForegroundWindow.restype = wintypes.HWND
 user32.WindowFromPoint.restype = wintypes.HWND
 user32.WindowFromPoint.argtypes = [wintypes.POINT]
+user32.SetWindowsHookExW.restype = wintypes.HHOOK
+user32.SetWindowsHookExW.argtypes = [ctypes.c_int, ctypes.c_void_p,
+                                      wintypes.HINSTANCE, wintypes.DWORD]
+user32.CallNextHookEx.restype = ctypes.c_longlong
+user32.CallNextHookEx.argtypes = [wintypes.HHOOK, ctypes.c_int,
+                                   wintypes.WPARAM, wintypes.LPARAM]
 
 
 def window_at(at):
@@ -584,20 +590,6 @@ def to_gray(image):
     if image is None or getattr(image, "size", 0) == 0:
         return None
     return _cv2.cvtColor(image, _cv2.COLOR_BGR2GRAY)
-
-
-def correlation(patch, template):
-    """How alike two same-sized images are, on the scale matchTemplate uses.
-    For equal sizes that measure is just Pearson's r, and computing it
-    directly skips the machinery of searching for something already found."""
-    if patch is None or template is None or patch.shape != template.shape:
-        return None
-    a = patch.astype(_np.float32)
-    b = template.astype(_np.float32)
-    a -= a.mean()
-    b -= b.mean()
-    spread = float(_np.sqrt(float((a * a).sum()) * float((b * b).sum())))
-    return float((a * b).sum() / spread) if spread else 0.0
 
 
 def best_match(haystack, needle):
@@ -1531,11 +1523,6 @@ def key_phases(vk, mods=0):
     return phases
 
 
-def key_stroke(vk, mods=0):
-    """Every step at once, for anything that does not need them spaced out."""
-    return [event for phase in key_phases(vk, mods) for event in phase]
-
-
 def button_click(which):
     """The press we swallowed, put back as it was."""
     if which == BUTTON_WHEEL:
@@ -1876,7 +1863,7 @@ class KeyboardLink:
     def chord(self, vks, hold_ms=BOARD_HOLD_MS):
         """키 여럿을 한 리포트 안에서 같이 누릅니다. 하나씩 보내면 수신기가
         앞의 것을 떼고 마지막 하나만 남습니다."""
-        if self.version < 2:
+        if self.version < BOARD_CHORD_VERSION:
             return False
         codes = []
         for vk in vks:
@@ -1999,12 +1986,6 @@ class SideButtonHook:
     def start(self):
         if self._handle:
             return True
-        user32.SetWindowsHookExW.restype = wintypes.HHOOK
-        user32.SetWindowsHookExW.argtypes = [ctypes.c_int, ctypes.c_void_p,
-                                              wintypes.HINSTANCE, wintypes.DWORD]
-        user32.CallNextHookEx.restype = ctypes.c_longlong
-        user32.CallNextHookEx.argtypes = [wintypes.HHOOK, ctypes.c_int,
-                                           wintypes.WPARAM, wintypes.LPARAM]
         self._handle = user32.SetWindowsHookExW(WH_MOUSE_LL, self._proc, None, 0)
         return bool(self._handle)
 
@@ -2487,17 +2468,6 @@ class PipWindow(QWidget):
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint |
                              Qt.WindowType.Tool |
                              Qt.WindowType.WindowStaysOnTopHint)
-
-    def refresh_window_flags(self):
-        visible = self.isVisible()
-        self._apply_window_flags()
-        if visible:
-            self.show()
-        # setWindowFlags strips WS_EX_TRANSPARENT, so click-through must be
-        # reapplied whether or not the window is currently visible.
-        self.apply_options()
-        if visible:
-            QTimer.singleShot(0, self.rebind_target)
 
     def showEvent(self, e):
         super().showEvent(e)
@@ -4850,20 +4820,6 @@ class TriggerWatcher(QObject):
         return to_gray(grab_client(self.controller.target_hwnd, x, y, w, h,
                                     out_w, out_h))
 
-    def check_known(self, trigger, preset, client, threshold):
-        spot = trigger.get("found", {}).get(preset)
-        full = self.template(trigger)
-        if not spot or full is None:
-            return False
-        width, height = client[2], client[3]
-        x, y = spot
-        th, tw = full.shape[:2]
-        if x < 0 or y < 0 or x + tw > width or y + th > height:
-            return False
-        # The spot is already known, so this is a yes or no, not a search.
-        score = correlation(self._region(x, y, tw, th), full)
-        return bool(score is not None and score >= threshold)
-
     def _set_matched(self, matched, reason=None):
         self.reason = reason if matched else None
         if matched == self.matched:
@@ -5337,12 +5293,6 @@ class PipController(QObject):
     def auto_hide_triggers(self):
         return self.auto_hide_options().setdefault("triggers", [])
 
-    def user_triggers(self):
-        """The ones the settings window shows. Bundled conditions are part of
-        the build's behaviour, so they are not presented as something to
-        manage - the master switch is the only control over them."""
-        return [t for t in self.auto_hide_triggers() if not t.get("builtin")]
-
     MIN_TRIGGER_DETAIL = 6.0   # grey standard deviation
 
     def add_trigger(self, image, name=None):
@@ -5379,28 +5329,6 @@ class PipController(QObject):
         self.refresh_settings()
         return trigger
 
-    def delete_trigger(self, trigger_id):
-        if str(trigger_id).startswith(BUILTIN_PREFIX):
-            return False
-        options = self.auto_hide_options()
-        options["triggers"] = [t for t in options.get("triggers", [])
-                                if t.get("id") != trigger_id]
-        save_config(self.config)
-        self.watcher.reload()
-        self.refresh_settings()
-        return True
-
-    def set_trigger_enabled(self, trigger_id, enabled):
-        for trigger in self.auto_hide_triggers():
-            if trigger.get("id") == trigger_id:
-                trigger["enabled"] = bool(enabled)
-                break
-        save_config(self.config)
-        self.watcher.reload()
-
-    def set_trigger_anchor(self, trigger_id, anchor):
-        self._set_trigger_field(trigger_id, "anchor", anchor, ANCHOR_KEYS)
-
     def _set_trigger_field(self, trigger_id, field, value, allowed):
         if value not in allowed:
             return
@@ -5415,43 +5343,6 @@ class PipController(QObject):
                 break
         save_config(self.config)
         self.watcher.reload()
-
-    def forget_trigger_spots(self, trigger_id=None):
-        """Drop the remembered positions so the next tick sweeps again."""
-        for trigger in self.auto_hide_triggers():
-            if trigger_id is None or trigger.get("id") == trigger_id:
-                trigger["found"] = {}
-        save_config(self.config)
-        self.watcher.reload()
-
-    def begin_capture_trigger(self, on_done=None):
-        """Freeze the client, let the user outline a graphic on it, and keep
-        those pixels. The still is taken before the picker covers the screen,
-        so what gets stored is the game itself and not our own mirror of it."""
-        if not MATCHING_AVAILABLE:
-            QMessageBox.information(self.settings_dialog, "안내",
-                                     "이 빌드에는 화면 감지 기능이 포함되지 않았습니다.")
-            return
-        hwnd = self.resolve_target_hwnd()
-        rect = get_client_rect_on_screen(hwnd) if hwnd else None
-        if not rect:
-            QMessageBox.information(self.settings_dialog, "안내",
-                                     f"{TARGET_LABEL} 이(가) 실행 중이 아닙니다.")
-            return
-        left, top, right, bottom = rect
-        frame = grab_screen(left, top, right - left, bottom - top)
-        if frame is None:
-            QMessageBox.information(self.settings_dialog, "안내",
-                                     "화면을 읽지 못했습니다.")
-            return
-        picker = self._open_picker()
-        if not picker:
-            return
-        picker.set_prompt("숨김 조건 추가",
-                           "숨김 기준으로 쓸 그래픽을 드래그하세요   ·   ESC 로 취소")
-        picker.finished.connect(
-            lambda x, y, w, h: self._on_trigger_selected(frame, x, y, w, h, on_done))
-        picker.show()
 
     def _on_trigger_selected(self, frame, x, y, w, h, on_done=None):
         height, width = frame.shape[:2]
@@ -5925,10 +5816,6 @@ class PipController(QObject):
         if self.region_is_visible(region):
             w.show()
         return w
-
-    def apply_window_flags(self):
-        for w in self.pip_windows.values():
-            w.refresh_window_flags()
 
     def rebind_all_pip_windows(self):
         for w in self.pip_windows.values():
